@@ -1,4 +1,4 @@
-# Leash
+# IpLeash
 
 A WPF desktop app that watches a list of Windows applications, reports the machine's current IP,
 and cuts those applications off from the network whenever the public IP is not the one you expect.
@@ -37,7 +37,7 @@ From the repository root:
 
 ```powershell
 dotnet build
-.\src\Leash\bin\Debug\net9.0-windows\Leash.exe
+.\src\IpLeash\bin\Debug\net9.0-windows\IpLeash.exe
 ```
 
 ## Window, tray and exit
@@ -160,7 +160,7 @@ netsh advfirewall firewall add rule name="<RULE>" dir=out action=block program="
 netsh advfirewall firewall add rule name="<RULE>" dir=in  action=block program="<exe>" enable=yes profile=any
 ```
 
-`<RULE>` is `Leash Block - <file name> [<8 hex>]`, where the hex is a hash of the full,
+`<RULE>` is `IpLeash Block - <file name> [<8 hex>]`, where the hex is a hash of the full,
 normalized path. The file name keeps it readable in `wf.msc`; the hash keeps it unique, which
 matters because a list can hold two different installs of the same executable name — an npm
 `claude.exe` and a native `claude.exe` would otherwise collide on a single rule.
@@ -181,27 +181,12 @@ that go missing later are flagged in red on their row.
 ### Crash recovery
 
 Rules are removed on exit, but a crash cannot run cleanup code. The paths of all active blocks
-are recorded in `%LOCALAPPDATA%\Leash\active-block.json`; on startup that file is read and
+are recorded in `%LOCALAPPDATA%\IpLeash\active-block.json`; on startup that file is read and
 the corresponding rules deleted, so a killed process can never leave an app blocked forever.
 
 This is also why only one instance may run: a second instance's startup cleanup would delete the
 first instance's *active* rules, silently unblocking apps while the first window still read
 BLOCKED.
-
-## Upgrading from NetMonitor
-
-This app was previously called NetMonitor. Two things deliberately still carry the old name, and
-neither should be "cleaned up":
-
-- **`AppPaths.LegacyFolderName`** — on first run, if `%LOCALAPPDATA%\Leash` does not exist and
-  `%LOCALAPPDATA%\NetMonitor` does, the JSON files are copied across. Settings are the obvious
-  reason, but `active-block.json` is the important one: it is the only record of which
-  executables a previous run left blocked, so losing it would make an old rule unfindable and
-  leave an application cut off with nothing in the UI able to release it.
-- **`FirewallService.LegacyRuleNamePrefixes`** — a firewall rule is only ever findable by the
-  exact name it was created with. Orphan cleanup therefore sweeps every historical form: the old
-  prefix in both its un-scoped and path-hashed spellings, plus the current prefix's un-scoped
-  form. Dropping a historical prefix would strand any rule written under it.
 
 ## Known limitations
 
@@ -217,7 +202,7 @@ neither should be "cleaned up":
   at once. Three independent providers make this rare, and every occurrence is logged.
 - **Some processes cannot be picked.** Protected and system processes do not expose their image
   path; they appear in the picker greyed out, since a rule needs a path.
-- **With a proxy in the path, the expected IP is the proxy's, not the machine's.** Leash
+- **With a proxy in the path, the expected IP is the proxy's, not the machine's.** IpLeash
   measures its own egress. If a monitored application routes differently — its own proxy setting,
   or none — then the address being compared is not the one that application exits from. The proxy
   panel exists to make this visible rather than to resolve it.
@@ -228,7 +213,7 @@ Strict MVVM, .NET 9, two Microsoft packages (`CommunityToolkit.Mvvm`,
 `Microsoft.Extensions.DependencyInjection`).
 
 ```
-src/Leash/
+src/IpLeash/
   App.xaml.cs            composition root; single-instance mutex, startup cleanup, idempotent teardown
   Models/                MonitoredApp, AppSettings, MonitorSnapshot, MonitoredAppState,
                          RunningExecutable, AdapterInfo, LogEntry, DiscoveredApp
@@ -242,7 +227,7 @@ src/Leash/
     ProxyService.cs        WinINET registry + env vars + effective proxy for the probe URL
     LocalIpService.cs      adapter enumeration
     ExecutableFile.cs      .exe + MZ screening
-    SettingsStore.cs       JSON settings, migrates the old single-app format
+    SettingsStore.cs       JSON settings load/save, tolerant of a corrupt file
     BlockStateStore.cs     crash-recovery record
   ViewModels/            MainViewModel, MonitoredAppViewModel, ExecutableViewModel,
                          ProcessPickerViewModel

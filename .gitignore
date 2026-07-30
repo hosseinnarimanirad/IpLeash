@@ -63,8 +63,7 @@ nunit-*.xml
 *.userosscache
 *.sln.docstates
 
-# Local archives / pre-rename snapshots
-src/NetMonitor.zip
+# Local archives
 *.zip
 
 # Certificates and secrets — none exist today; keep it that way
