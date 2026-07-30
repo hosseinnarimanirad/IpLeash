@@ -55,3 +55,26 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Visual Studio IDE cache and per-user state
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Local archives / pre-rename snapshots
+src/NetMonitor.zip
+*.zip
+
+# Certificates and secrets — none exist today; keep it that way
+*.pfx
+*.p12
+*.key
+*.pem
+secrets.json
+
+# App runtime state (lives in %LOCALAPPDATA%; never commit a copy —
+# settings.json holds the user's real VPN exit IPs)
+settings.json
+active-block.json
