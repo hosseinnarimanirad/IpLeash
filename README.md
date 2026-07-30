@@ -17,12 +17,8 @@ address, every monitored app stops talking to the internet until the expected IP
 
 ## Build and run
 
-From the repository root:
-
-```powershell
-dotnet build
-.\src\IpLeash\bin\Debug\net9.0-windows\IpLeash.exe
-```
+Run `dotnet build` from the repository root, then launch the built `IpLeash.exe` from
+`src\IpLeash\bin\Debug\net9.0-windows`. Windows will prompt for elevation.
 
 ## Behaviour worth knowing
 
@@ -55,26 +51,20 @@ words.
 
 ## How the block works
 
-Two rules per executable, sharing one name:
-
-```
-netsh advfirewall firewall add rule name="<RULE>" dir=out action=block program="<exe>" enable=yes profile=any
-netsh advfirewall firewall add rule name="<RULE>" dir=in  action=block program="<exe>" enable=yes profile=any
-```
-
-`<RULE>` is `IpLeash Block - <file name> [<8 hex>]`, where the hex is a hash of the full,
-normalized path. The name keeps it readable in `wf.msc`; the hash keeps it unique, because a list
-can hold two installs of the same executable name — an npm `claude.exe` and a native `claude.exe`
+Enforcement is Windows Firewall, driven through `netsh`. Each blocked executable gets a pair of
+rules — one outbound, one inbound — sharing a single name so one delete removes both. Rules are
+named `IpLeash Block - <file name> [<8 hex>]`, where the hex is a hash of the full normalized path:
+the file name keeps them readable in `wf.msc`, and the hash keeps them unique, because a list can
+hold two installs of the same executable name and an npm `claude.exe` and a native `claude.exe`
 would otherwise collide on one rule.
 
 Windows Firewall gives block rules precedence over allow rules, so this works even if the
-application already has allow rules of its own. netsh output is localized, so success is decided
-purely by exit code — the text is never parsed.
+application already has allow rules of its own.
 
 **Executables are screened before a rule is written.** netsh happily accepts a rule pointing at a
-`.cmd` launcher or a missing file, reports success, and blocks nothing. A silent no-op is the
-worst outcome for a kill-switch, so every candidate must exist, end in `.exe`, and start with the
-`MZ` DOS signature. Executables that go missing later are flagged in red on their row.
+`.cmd` launcher or a missing file, reports success, and blocks nothing. A silent no-op is the worst
+outcome for a kill-switch, so every candidate must exist, end in `.exe`, and start with the `MZ`
+DOS signature. Executables that go missing later are flagged in red on their row.
 
 **Crash recovery.** Rules are removed on exit, but a crash cannot run cleanup code. Active block
 paths are recorded in `%LOCALAPPDATA%\IpLeash\active-block.json`; on startup that file is read and
@@ -96,50 +86,3 @@ the corresponding rules deleted, so a killed process can never leave an app bloc
 - **With a proxy in the path, the expected IP is the proxy's, not the machine's.** IpLeash measures
   its own egress. If a monitored application routes differently, the address being compared is not
   the one that application exits from.
-
-## Architecture
-
-Strict MVVM, .NET 9, two Microsoft packages (`CommunityToolkit.Mvvm`,
-`Microsoft.Extensions.DependencyInjection`).
-
-```
-src/IpLeash/
-  App.xaml.cs            composition root; single-instance mutex, startup cleanup, teardown
-  Models/                settings and snapshot types
-  Services/              one interface + one implementation each
-    MonitorEngine.cs       the state machine: poll -> decide -> reconcile
-    FirewallService.cs     netsh add/delete/show, exit-code driven
-    AppDiscoveryService.cs Claude Code / Claude Desktop location probing
-    ProcessWatcher.cs      per-path PID matching + running-executable enumeration
-    PublicIpService.cs     three providers, 5 s timeout each
-    ProxyService.cs        WinINET registry + env vars + effective proxy for the probe URL
-    LocalIpService.cs      adapter enumeration
-    ExecutableFile.cs      .exe + MZ screening
-    SettingsStore.cs       JSON settings, tolerant of a corrupt file
-    BlockStateStore.cs     crash-recovery record
-  ViewModels/            no WPF types, not even ICollectionView
-  Views/                 MainWindow, ProcessPickerWindow (+ empty code-behinds), Converters/
-    Styles/Theme.xaml    every colour, radius, font and control template
-```
-
-The rules the code is held to:
-
-- Both windows' code-behind contain `InitializeComponent()` and nothing else; the XAML has no
-  event handlers. Dialogs close via the `DialogCloser` attached property.
-- `Closing` is subscribed in `App`, not in the window. Hiding versus quitting is a lifetime
-  decision, and lifetime belongs to the composition root.
-- `MonitorEngine` has no UI awareness. It uses `System.Timers.Timer`, not `DispatcherTimer`, so it
-  is never pinned to the UI thread; the ViewModel marshals via a captured `SynchronizationContext`.
-- Evaluation is serialized by a `SemaphoreSlim`, because the poll timer and `NetworkAddressChanged`
-  can otherwise fire together and issue conflicting netsh calls.
-- Every service sits behind an interface, so the engine can be tested without a firewall or a
-  network.
-- Views never spell out a colour; buttons and text inputs are templated rather than restyled,
-  since the stock WPF chrome has a gradient and a 3 px corner no property setter removes.
-- **Lists are a `ScrollViewer` plus an `ItemsControl`, never a `ListBox`.** A ListBox measures
-  items against infinite width, which silently disables `TextWrapping` and star-sized columns —
-  long text then clips mid-word instead of wrapping. That is a real hazard for the activity log,
-  whose most important messages (`FAILED TO BLOCK …`) are also its longest.
-- `Assets/*.ico` are generated: one mark in five colours at 16/24/32/48/64 px, as 32bpp DIBs
-  rather than PNG-in-ICO — GDI+ cannot rasterise PNG frames, and `NotifyIcon` takes a
-  `System.Drawing.Icon`, so a PNG-framed file loads without error and then shows no tray image.
