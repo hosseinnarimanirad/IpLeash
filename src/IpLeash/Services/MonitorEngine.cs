@@ -17,6 +17,7 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
     private readonly IProcessWatcher _processWatcher;
     private readonly IFirewallService _firewall;
     private readonly IProxyService _proxy;
+    private readonly IGeoIpService _geo;
 
     private readonly Timer _evalTimer = new() { AutoReset = true };
     private readonly Timer _fastTimer = new(FastRefreshInterval.TotalMilliseconds) { AutoReset = true };
@@ -35,6 +36,9 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
     private MonitorStatus _status = MonitorStatus.Idle;
     private string? _publicIpText;
     private IpProbeState _probeState = IpProbeState.Unknown;
+    private string? _countryCode;
+    private string? _countryName;
+    private GeoProbeState _geoState = GeoProbeState.Unknown;
     private ProxyInfo _proxyInfo = ProxyInfo.None;
     private string _reason = "Not monitoring.";
     private DateTimeOffset? _lastCheckedAt;
@@ -48,18 +52,23 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
     /// <summary>Live PIDs per executable path. Guarded by <see cref="_stateLock"/>.</summary>
     private Dictionary<string, IReadOnlyList<int>> _pidsByPath = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Ensures only one background country refresh is in flight at a time.</summary>
+    private int _countryRefreshInFlight;
+
     public MonitorEngine(
         IPublicIpService publicIp,
         ILocalIpService localIp,
         IProcessWatcher processWatcher,
         IFirewallService firewall,
-        IProxyService proxy)
+        IProxyService proxy,
+        IGeoIpService geo)
     {
         _publicIp = publicIp;
         _localIp = localIp;
         _processWatcher = processWatcher;
         _firewall = firewall;
         _proxy = proxy;
+        _geo = geo;
 
         _evalTimer.Elapsed += OnEvalTimerElapsed;
         _fastTimer.Elapsed += OnFastTimerElapsed;
@@ -183,9 +192,13 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
         _evalTimer.Start();
 
         var appCount = settings.Apps.Count(a => a.Enabled);
+        var target = settings.MatchMode == MatchMode.Country
+            ? $"locked to {CountryCatalog.NameOf(settings.ExpectedCountryCode)} ({settings.ExpectedCountryCode})"
+            : $"expected public IP {settings.ExpectedPublicIp}";
+
         Log(LogLevel.Info,
             $"Monitoring started — {appCount} app{(appCount == 1 ? "" : "s")} ({targets.Count} executable{(targets.Count == 1 ? "" : "s")}), " +
-            $"expected public IP {settings.ExpectedPublicIp}, polling every {settings.ClampedPollSeconds}s.");
+            $"{target}, polling every {settings.ClampedPollSeconds}s.");
 
         await EvaluateAsync(_sessionCts.Token).ConfigureAwait(false);
     }
@@ -285,11 +298,32 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
             lock (_stateLock)
             {
                 _probeState = IpProbeState.Checking;
+                _geoState = GeoProbeState.Checking;
             }
 
             Publish();
 
             var current = await _publicIp.GetPublicIpAsync(ct).ConfigureAwait(false);
+
+            // Nothing is being enforced while idle, so the extra latency costs nothing and this
+            // doubles as a cache warm-up: by the time Start is pressed in country mode, the
+            // current address is usually already resolved.
+            CountryInfo? country = null;
+            if (current is not null)
+            {
+                try
+                {
+                    country = await _geo.GetCountryAsync(current, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch
+                {
+                    // Country stays unknown; the address itself is still good.
+                }
+            }
 
             lock (_stateLock)
             {
@@ -297,18 +331,20 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
                 // failed lookup here must not read as a fail-closed block.
                 _publicIpText = current?.ToString();
                 _probeState = current is null ? IpProbeState.Failed : IpProbeState.Resolved;
+                ApplyCountryLocked(current, country);
                 _lastCheckedAt = DateTimeOffset.Now;
             }
 
             Log(current is null ? LogLevel.Warning : LogLevel.Info, current is null
                 ? "Public IP could not be determined."
-                : $"Public IP is {current}.");
+                : $"Public IP is {current}{DescribeCountry(country)}.");
         }
         catch (OperationCanceledException)
         {
             lock (_stateLock)
             {
                 _probeState = IpProbeState.Unknown;
+                _geoState = GeoProbeState.Unknown;
             }
         }
         catch (Exception ex)
@@ -316,6 +352,7 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
             lock (_stateLock)
             {
                 _probeState = IpProbeState.Failed;
+                _geoState = GeoProbeState.Failed;
             }
 
             Log(LogLevel.Error, $"Public IP lookup failed: {ex.Message}");
@@ -379,20 +416,53 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
                 return;
             }
 
-            var (desired, reason) = Decide(current, settings.ExpectedPublicIp);
+            // Asymmetric on purpose. In country mode the country is a decision input and must be
+            // awaited; in exact-IP mode it is decoration, so it is read from cache only and
+            // refreshed off to the side. That keeps the original mode's timing exactly as it was.
+            CountryInfo? country = null;
+            if (current is not null)
+            {
+                if (settings.MatchMode == MatchMode.Country)
+                {
+                    try
+                    {
+                        country = await _geo.GetCountryAsync(current, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        country = null;
+                        Log(LogLevel.Warning, $"Country lookup failed: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    country = _geo.TryGetCached(current);
+                    QueueBackgroundCountryRefresh(current, ct);
+                }
+            }
+
+            var (desired, reason) = Decide(
+                current, country, settings.MatchMode, settings.ExpectedPublicIp, settings.ExpectedCountryCode);
             var shouldBlock = desired != MonitorStatus.Allowed;
 
             MonitorStatus previousStatus;
             string? previousIp;
+            string? previousCountry;
 
             lock (_stateLock)
             {
                 previousStatus = _status;
                 previousIp = _publicIpText;
+                previousCountry = _countryCode;
 
                 _status = desired;
                 _publicIpText = current?.ToString();
                 _probeState = current is null ? IpProbeState.Failed : IpProbeState.Resolved;
+                ApplyCountryLocked(current, country);
                 _reason = reason;
                 _lastCheckedAt = DateTimeOffset.Now;
             }
@@ -401,7 +471,14 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
             {
                 Log(LogLevel.Info, current is null
                     ? "Public IP could not be determined."
-                    : $"Public IP is {current}.");
+                    : $"Public IP is {current}{DescribeCountry(country)}.");
+            }
+            else if (previousCountry != country?.Code && current is not null)
+            {
+                // Same address, new answer about it — worth one line, but only once.
+                Log(country is null ? LogLevel.Warning : LogLevel.Info, country is null
+                    ? $"Country for {current} could not be determined — all geolocation providers failed."
+                    : $"Public IP {current} is in {country.Name} ({country.Code}).");
             }
 
             await ReconcileAsync(settings, shouldBlock, ct).ConfigureAwait(false);
@@ -491,24 +568,123 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
     }
 
     /// <summary>
-    /// Maps the observed public IP to an enforcement decision. A null observation is a mismatch,
-    /// not an unchanged state — that is the fail-closed rule.
+    /// Maps the observed public IP, and its country when that is what is being matched, to an
+    /// enforcement decision. Any observation that could not be made is a mismatch, not an
+    /// unchanged state — that is the fail-closed rule.
+    ///
+    /// Still static and still free of I/O: the lookups happen in the caller, so this stays a
+    /// function of its arguments and every branch is inspectable on its own.
     /// </summary>
-    private static (MonitorStatus Status, string Reason) Decide(IPAddress? current, string expected)
+    private static (MonitorStatus Status, string Reason) Decide(
+        IPAddress? current,
+        CountryInfo? currentCountry,
+        MatchMode mode,
+        string expectedIp,
+        string expectedCountryCode)
     {
         if (current is null)
         {
             return (MonitorStatus.Unknown, "Public IP could not be determined — blocking (fail-closed).");
         }
 
-        if (!IPAddress.TryParse(expected, out var expectedAddress))
+        if (mode == MatchMode.Country)
         {
-            return (MonitorStatus.Blocked, $"Expected IP '{expected}' is not a valid address — blocking.");
+            // Normalised on both sides, so an empty expected value can never compare equal to an
+            // empty observed one and read as a match.
+            var expected = CountryInfo.NormalizeCode(expectedCountryCode);
+            if (expected is null)
+            {
+                return (MonitorStatus.Blocked, "No country is selected to lock to — blocking.");
+            }
+
+            if (currentCountry is null)
+            {
+                return (MonitorStatus.Unknown,
+                    $"Public IP {current} resolved, but its country could not be determined — blocking (fail-closed).");
+            }
+
+            return string.Equals(currentCountry.Code, expected, StringComparison.OrdinalIgnoreCase)
+                ? (MonitorStatus.Allowed, $"Public IP {current} is in {currentCountry.Name} — the expected country.")
+                : (MonitorStatus.Blocked,
+                    $"Public IP {current} is in {currentCountry.Name}, not {CountryCatalog.NameOf(expected)}.");
+        }
+
+        if (!IPAddress.TryParse(expectedIp, out var expectedAddress))
+        {
+            return (MonitorStatus.Blocked, $"Expected IP '{expectedIp}' is not a valid address — blocking.");
         }
 
         return current.Equals(expectedAddress)
             ? (MonitorStatus.Allowed, $"Public IP {current} matches the expected address.")
             : (MonitorStatus.Blocked, $"Public IP {current} does not match expected {expectedAddress}.");
+    }
+
+    /// <summary>
+    /// Writes the country fields. Must be called under <see cref="_stateLock"/>.
+    ///
+    /// Clearing on a miss is deliberate: a stale flag sitting beside a freshly changed address
+    /// would claim the new address is somewhere it has not been checked to be.
+    /// </summary>
+    private void ApplyCountryLocked(IPAddress? current, CountryInfo? country)
+    {
+        _countryCode = country?.Code;
+        _countryName = country?.Name;
+        _geoState = current is null
+            ? GeoProbeState.Unknown
+            : country is null ? GeoProbeState.Failed : GeoProbeState.Resolved;
+    }
+
+    private static string DescribeCountry(CountryInfo? country) =>
+        country is null ? string.Empty : $", in {country.Name} ({country.Code})";
+
+    /// <summary>
+    /// Resolves the country off the evaluation path, for display only.
+    ///
+    /// This runs in exact-IP mode, where the country decides nothing. It therefore touches only
+    /// the three country fields and republishes — never the status, the probe state, the blocked
+    /// set, or the firewall. A display refresh must not be able to change what is enforced.
+    /// </summary>
+    private void QueueBackgroundCountryRefresh(IPAddress address, CancellationToken ct)
+    {
+        if (Interlocked.CompareExchange(ref _countryRefreshInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var country = await _geo.GetCountryAsync(address, ct).ConfigureAwait(false);
+
+                bool changed;
+                lock (_stateLock)
+                {
+                    // Only if the reading still describes the address on display; an evaluation
+                    // may have moved on while this was in flight.
+                    if (_publicIpText != address.ToString())
+                    {
+                        return;
+                    }
+
+                    changed = _countryCode != country?.Code;
+                    ApplyCountryLocked(address, country);
+                }
+
+                if (changed)
+                {
+                    Publish();
+                }
+            }
+            catch
+            {
+                // Display-only. A failure here leaves the flag as it was and costs nothing.
+            }
+            finally
+            {
+                Volatile.Write(ref _countryRefreshInFlight, 0);
+            }
+        }, CancellationToken.None);
     }
 
     private void OnEvalTimerElapsed(object? sender, ElapsedEventArgs e) =>
@@ -596,16 +772,21 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
                 _pidsByPath.TryGetValue(path, out var pids) ? pids : Array.Empty<int>())).ToList()))
             .ToList();
 
+        // Named from here on: CountryCode and CountryName are string? neighbours of PublicIp, so a
+        // positional slip would compile cleanly and quietly put the address behind the flag.
         return new MonitorSnapshot(
             _status,
-            _publicIpText,
-            _probeState,
-            _reason,
-            _lastCheckedAt,
-            _proxyInfo,
-            apps,
-            _adapters,
-            _isRunning);
+            PublicIp: _publicIpText,
+            ProbeState: _probeState,
+            CountryCode: _countryCode,
+            CountryName: _countryName,
+            GeoState: _geoState,
+            Reason: _reason,
+            LastCheckedAt: _lastCheckedAt,
+            Proxy: _proxyInfo,
+            Apps: apps,
+            Adapters: _adapters,
+            IsRunning: _isRunning);
     }
 
     private void Publish()

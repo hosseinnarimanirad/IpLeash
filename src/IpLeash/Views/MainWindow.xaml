@@ -22,6 +22,9 @@
         <conv:LogLevelToBrushConverter x:Key="LogLevelToBrush" />
         <conv:BooleanToVisibilityConverter x:Key="BoolToVis" />
         <conv:InverseBooleanConverter x:Key="InverseBool" />
+        <conv:CountryCodeToFlagConverter x:Key="CountryCodeToFlag" />
+        <conv:EnumToBooleanConverter x:Key="EnumToBool" />
+        <conv:MaskIpConverter x:Key="MaskIp" />
     </Window.Resources>
 
     <Grid Margin="20,18,20,20">
@@ -85,8 +88,15 @@
                 <StackPanel Grid.Column="1">
                     <TextBlock Text="{Binding Status, Converter={StaticResource StatusToText}}"
                                FontSize="18" FontWeight="SemiBold" Foreground="White" />
-                    <TextBlock Text="{Binding StatusReason}" Foreground="#EDF0F4"
-                               FontSize="{StaticResource FontSizeBody}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                    <TextBlock Foreground="#EDF0F4"
+                               FontSize="{StaticResource FontSizeBody}" TextWrapping="Wrap" Margin="0,3,0,0">
+                        <TextBlock.Text>
+                            <MultiBinding Converter="{StaticResource MaskIp}">
+                                <Binding Path="StatusReason" />
+                                <Binding Path="HideIps" />
+                            </MultiBinding>
+                        </TextBlock.Text>
+                    </TextBlock>
                 </StackPanel>
             </Grid>
         </Border>
@@ -94,7 +104,35 @@
         <!-- ============================ Network ============================ -->
         <Border Grid.Row="3" Style="{StaticResource Card}">
             <StackPanel>
-                <TextBlock Text="Network" Style="{StaticResource SectionHeader}" />
+                <Grid>
+                    <TextBlock Text="Network" Style="{StaticResource SectionHeader}" />
+
+                    <!-- Eye toggle. Drawn rather than set in an icon font so it does not depend on
+                         which Segoe icon set the machine happens to have. -->
+                    <!-- GhostButton, not IconButton: IconButton goes red on hover because it is
+                         the style for the destructive remove buttons, and this toggle is neither
+                         destructive nor irreversible. -->
+                    <Button HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,0,0"
+                            Style="{StaticResource GhostButton}"
+                            Padding="8,0" Height="{StaticResource SmallControlHeight}"
+                            Command="{Binding ToggleHideIpsCommand}"
+                            ToolTip="{Binding HideIpsToolTip}">
+                        <Canvas Width="18" Height="14">
+                            <Path Data="M 1,7 C 4.5,2 13.5,2 17,7 C 13.5,12 4.5,12 1,7 Z"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.3" />
+                            <Ellipse Canvas.Left="6.6" Canvas.Top="4.6" Width="4.8" Height="4.8"
+                                     Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                            <!-- The slash only appears once addresses are actually hidden. -->
+                            <Line X1="2" Y1="12.5" X2="16" Y2="1.5"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  Visibility="{Binding DataContext.HideIps,
+                                                       RelativeSource={RelativeSource AncestorType=Window},
+                                                       Converter={StaticResource BoolToVis}}" />
+                        </Canvas>
+                    </Button>
+                </Grid>
 
                 <!-- Public IP, local adapters and system proxy, side by side.
                      Keeping all three on one row is what frees the vertical space the
@@ -109,21 +147,43 @@
                     <StackPanel Grid.Column="0" VerticalAlignment="Center">
                         <TextBlock Text="PUBLIC IP" FontSize="{StaticResource FontSizeTiny}"
                                    FontWeight="SemiBold" Foreground="{StaticResource TextMutedBrush}" />
-                        <TextBlock Text="{Binding PublicIpText}"
-                                   FontSize="{StaticResource FontSizeDisplay}" FontWeight="SemiBold"
-                                   Foreground="{StaticResource TextPrimaryBrush}" Margin="0,2,0,0">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Style.Triggers>
-                                        <!-- A pending lookup reads as muted, not as a value. -->
-                                        <DataTrigger Binding="{Binding IsCheckingPublicIp}" Value="True">
-                                            <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
-                                            <Setter Property="FontSize" Value="{StaticResource FontSizeTitle}" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                            <!-- Hidden while a lookup is pending, so a flag from the previous
+                                 address never sits beside a value that has not been checked. -->
+                            <Image Width="28" Height="20" Margin="0,0,9,0" VerticalAlignment="Center"
+                                   RenderOptions.BitmapScalingMode="HighQuality"
+                                   SnapsToDevicePixels="True"
+                                   Source="{Binding CurrentCountryCode, Converter={StaticResource CountryCodeToFlag}}"
+                                   ToolTip="{Binding CountryToolTip}"
+                                   Visibility="{Binding HasCurrentCountry, Converter={StaticResource BoolToVis}}" />
+
+                            <TextBlock FontSize="{StaticResource FontSizeDisplay}" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       VerticalAlignment="Center">
+                                <TextBlock.Text>
+                                    <MultiBinding Converter="{StaticResource MaskIp}">
+                                        <Binding Path="PublicIpText" />
+                                        <Binding Path="HideIps" />
+                                    </MultiBinding>
+                                </TextBlock.Text>
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <!-- A pending lookup reads as muted, not as a value. -->
+                                            <DataTrigger Binding="{Binding IsCheckingPublicIp}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
+                                                <Setter Property="FontSize" Value="{StaticResource FontSizeTitle}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+
+                        <TextBlock Text="{Binding CurrentCountryName}" Style="{StaticResource Caption}"
+                                   Margin="0,2,0,0" TextTrimming="CharacterEllipsis"
+                                   Visibility="{Binding HasCurrentCountry, Converter={StaticResource BoolToVis}}" />
                         <TextBlock Text="{Binding LastCheckedText}" Style="{StaticResource Caption}"
                                    Margin="0,2,0,0" />
                     </StackPanel>
@@ -139,11 +199,18 @@
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <StackPanel Orientation="Horizontal" Margin="0,1">
-                                                <TextBlock Text="{Binding IpAddress}"
-                                                           FontFamily="{StaticResource MonoFont}"
+                                                <TextBlock FontFamily="{StaticResource MonoFont}"
                                                            FontSize="{StaticResource FontSizeTiny}"
                                                            Foreground="{StaticResource TextPrimaryBrush}"
-                                                           Width="104" />
+                                                           Width="104">
+                                                    <TextBlock.Text>
+                                                        <MultiBinding Converter="{StaticResource MaskIp}">
+                                                            <Binding Path="IpAddress" />
+                                                            <Binding Path="DataContext.HideIps"
+                                                                     RelativeSource="{RelativeSource AncestorType=Window}" />
+                                                        </MultiBinding>
+                                                    </TextBlock.Text>
+                                                </TextBlock>
                                                 <TextBlock Text="{Binding Name}"
                                                            FontSize="{StaticResource FontSizeTiny}"
                                                            Foreground="{StaticResource TextSecondaryBrush}"
@@ -194,53 +261,139 @@
 
                 <Separator Margin="0,14,0,12" Background="{StaticResource BorderBrush}" />
 
-                <!-- Expected IP -->
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="170" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="72" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
+                <!-- Lock mode, and the poll interval that applies to both modes -->
+                <Grid Margin="0,0,0,10">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Lock to" Style="{StaticResource FieldLabel}" Margin="0,0,12,0" />
+                        <RadioButton GroupName="MatchMode" Content="Exact IP" Margin="0,0,16,0"
+                                     Style="{StaticResource ThemedRadioButton}"
+                                     IsEnabled="{Binding IsMonitoring, Converter={StaticResource InverseBool}}"
+                                     IsChecked="{Binding MatchMode, Converter={StaticResource EnumToBool},
+                                                         ConverterParameter=ExactIp}"
+                                     ToolTip="Allow only one specific public address." />
+                        <RadioButton GroupName="MatchMode" Content="Country"
+                                     Style="{StaticResource ThemedRadioButton}"
+                                     IsEnabled="{Binding IsMonitoring, Converter={StaticResource InverseBool}}"
+                                     IsChecked="{Binding MatchMode, Converter={StaticResource EnumToBool},
+                                                         ConverterParameter=Country}"
+                                     ToolTip="Allow any public address that geolocates to the chosen country." />
+                    </StackPanel>
 
-                    <TextBlock Grid.Column="0" Text="Expected public IP" Style="{StaticResource FieldLabel}"
-                               Margin="0,0,10,0" />
-                    <TextBox x:Name="ExpectedIpBox" Grid.Column="1" Style="{StaticResource Field}"
-                             IsEnabled="{Binding IsMonitoring, Converter={StaticResource InverseBool}}"
-                             Text="{Binding ExpectedIp, UpdateSourceTrigger=PropertyChanged,
-                                            ValidatesOnNotifyDataErrors=True, NotifyOnValidationError=True}" />
-
-                    <Button Grid.Column="2" Content="Use detected" Style="{StaticResource GhostButton}"
-                            Margin="8,0,0,0" Command="{Binding UseDetectedIpCommand}"
-                            ToolTip="Set the expected address to the public IP detected right now." />
-                    <Button Grid.Column="3" Content="Save" Style="{StaticResource GhostButton}"
-                            Command="{Binding SaveExpectedIpCommand}"
-                            ToolTip="Remember this address so it can be picked again later." />
-
-                    <TextBlock Grid.Column="5" Text="Check every" Style="{StaticResource FieldLabel}"
-                               Margin="0,0,10,0" />
-                    <TextBox Grid.Column="6" Style="{StaticResource Field}"
-                             IsEnabled="{Binding IsMonitoring, Converter={StaticResource InverseBool}}"
-                             Text="{Binding PollSeconds, UpdateSourceTrigger=PropertyChanged,
-                                            ValidatesOnNotifyDataErrors=True, NotifyOnValidationError=True}" />
-                    <TextBlock Grid.Column="7" Text="sec" Style="{StaticResource FieldLabel}" Margin="8,0,0,0" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <TextBlock Text="Check every" Style="{StaticResource FieldLabel}" Margin="0,0,10,0" />
+                        <TextBox Width="72" Style="{StaticResource Field}"
+                                 IsEnabled="{Binding IsMonitoring, Converter={StaticResource InverseBool}}"
+                                 Text="{Binding PollSeconds, UpdateSourceTrigger=PropertyChanged,
+                                                ValidatesOnNotifyDataErrors=True, NotifyOnValidationError=True}" />
+                        <TextBlock Text="sec" Style="{StaticResource FieldLabel}" Margin="8,0,0,0" />
+                    </StackPanel>
                 </Grid>
 
-                <TextBlock Style="{StaticResource ErrorText}"
-                           Text="{Binding ElementName=ExpectedIpBox, Path=(Validation.Errors)[0].ErrorContent}"
-                           Visibility="{Binding ElementName=ExpectedIpBox, Path=(Validation.HasError),
-                                                Converter={StaticResource BoolToVis}}" />
+                <!-- Expected IP -->
+                <StackPanel Visibility="{Binding IsExactIpMode, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Expected public IP" Style="{StaticResource FieldLabel}"
+                                   Margin="0,0,10,0" />
+                        <!-- The mask is an opaque overlay rather than a swapped-in value, so the
+                             TextBox keeps its real Text and its validation the whole time. It is
+                             hit-test-transparent, so clicking it lands in the box underneath,
+                             which focuses it and drops the mask for editing. -->
+                        <Grid Width="170">
+                            <TextBox x:Name="ExpectedIpBox" Style="{StaticResource Field}"
+                                     IsEnabled="{Binding IsMonitoring, Converter={StaticResource InverseBool}}"
+                                     Text="{Binding ExpectedIp, UpdateSourceTrigger=PropertyChanged,
+                                                    ValidatesOnNotifyDataErrors=True, NotifyOnValidationError=True}" />
 
-                <!-- Saved IP chips -->
+                            <Border Background="{StaticResource SurfaceBrush}" IsHitTestVisible="False"
+                                    CornerRadius="{StaticResource ControlRadius}" Margin="1.6">
+                                <TextBlock Text="***.***.***.***" Margin="8,0,0,0"
+                                           VerticalAlignment="Center"
+                                           FontFamily="{StaticResource UiFont}"
+                                           FontSize="{StaticResource FontSizeBody}"
+                                           Foreground="{StaticResource TextMutedBrush}" />
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding HideIps}" Value="True" />
+                                                    <Condition Binding="{Binding IsKeyboardFocusWithin,
+                                                                                ElementName=ExpectedIpBox}" Value="False" />
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                            </Border>
+                        </Grid>
+                        <Button Content="Use detected" Style="{StaticResource GhostButton}"
+                                Margin="8,0,0,0" Command="{Binding UseDetectedIpCommand}"
+                                ToolTip="Set the expected address to the public IP detected right now." />
+                        <Button Content="Save" Style="{StaticResource GhostButton}"
+                                Command="{Binding SaveExpectedTargetCommand}"
+                                ToolTip="Remember this address so it can be picked again later." />
+                    </StackPanel>
+
+                    <TextBlock Style="{StaticResource ErrorText}"
+                               Text="{Binding ElementName=ExpectedIpBox, Path=(Validation.Errors)[0].ErrorContent}"
+                               Visibility="{Binding ElementName=ExpectedIpBox, Path=(Validation.HasError),
+                                                    Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+
+                <!-- Expected country -->
+                <StackPanel Visibility="{Binding IsCountryMode, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Expected country" Style="{StaticResource FieldLabel}"
+                                   Margin="0,0,10,0" />
+
+                        <!-- Not editable: with TextSearch on the name, typing "unit" still jumps
+                             to United Kingdom, and the closed box keeps showing the flag. -->
+                        <ComboBox x:Name="ExpectedCountryBox" Width="240"
+                                  Style="{StaticResource FieldComboBox}"
+                                  ItemsSource="{Binding Countries}"
+                                  IsTextSearchEnabled="True" TextSearch.TextPath="Name"
+                                  IsEnabled="{Binding IsMonitoring, Converter={StaticResource InverseBool}}"
+                                  SelectedItem="{Binding ExpectedCountry,
+                                                         ValidatesOnNotifyDataErrors=True,
+                                                         NotifyOnValidationError=True}">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Image Width="22" Height="16" Margin="0,0,9,0"
+                                               VerticalAlignment="Center"
+                                               RenderOptions.BitmapScalingMode="HighQuality"
+                                               Source="{Binding Code, Converter={StaticResource CountryCodeToFlag}}" />
+                                        <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+
+                        <Button Content="Use detected" Style="{StaticResource GhostButton}"
+                                Margin="8,0,0,0" Command="{Binding UseDetectedCountryCommand}"
+                                ToolTip="Lock to the country the current public IP is in." />
+                        <Button Content="Save" Style="{StaticResource GhostButton}"
+                                Command="{Binding SaveExpectedTargetCommand}"
+                                ToolTip="Remember this country so it can be picked again later." />
+                    </StackPanel>
+
+                    <TextBlock Style="{StaticResource ErrorText}"
+                               Text="{Binding ElementName=ExpectedCountryBox, Path=(Validation.Errors)[0].ErrorContent}"
+                               Visibility="{Binding ElementName=ExpectedCountryBox, Path=(Validation.HasError),
+                                                    Converter={StaticResource BoolToVis}}" />
+
+                    <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,6,0,0"
+                               Text="Country matching depends on a geolocation lookup, so it is a looser guarantee than an exact address. If the country cannot be determined, IpLeash blocks." />
+                </StackPanel>
+
+                <!-- Saved target chips -->
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0"
-                            Visibility="{Binding HasSavedIps, Converter={StaticResource BoolToVis}}">
+                            Visibility="{Binding HasSavedTargets, Converter={StaticResource BoolToVis}}">
                     <TextBlock Text="Saved" Style="{StaticResource Caption}" VerticalAlignment="Center"
                                Margin="0,0,10,0" />
-                    <ItemsControl ItemsSource="{Binding SavedIps}">
+                    <ItemsControl ItemsSource="{Binding SavedTargets}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <WrapPanel Orientation="Horizontal" />
@@ -251,17 +404,43 @@
                                 <Border Style="{StaticResource InsetPanel}" Margin="0,0,6,4"
                                         CornerRadius="{StaticResource PillRadius}">
                                     <StackPanel Orientation="Horizontal">
-                                        <Button Content="{Binding}" Style="{StaticResource ChipButton}"
-                                                BorderThickness="0" Background="Transparent"
-                                                Command="{Binding DataContext.UseSavedIpCommand,
+                                        <Image Width="19" Height="14" Margin="9,0,0,0"
+                                               VerticalAlignment="Center"
+                                               RenderOptions.BitmapScalingMode="HighQuality"
+                                               Source="{Binding FlagCode, Converter={StaticResource CountryCodeToFlag}}" />
+                                        <Button BorderThickness="0" Background="Transparent"
+                                                Command="{Binding DataContext.UseSavedTargetCommand,
                                                                   RelativeSource={RelativeSource AncestorType=Window}}"
-                                                CommandParameter="{Binding}"
-                                                ToolTip="Use this address" />
+                                                CommandParameter="{Binding}">
+                                            <Button.Content>
+                                                <MultiBinding Converter="{StaticResource MaskIp}">
+                                                    <Binding Path="DisplayText" />
+                                                    <Binding Path="DataContext.HideIps"
+                                                             RelativeSource="{RelativeSource AncestorType=Window}" />
+                                                </MultiBinding>
+                                            </Button.Content>
+                                            <Button.ToolTip>
+                                                <MultiBinding Converter="{StaticResource MaskIp}">
+                                                    <Binding Path="ToolTipText" />
+                                                    <Binding Path="DataContext.HideIps"
+                                                             RelativeSource="{RelativeSource AncestorType=Window}" />
+                                                </MultiBinding>
+                                            </Button.ToolTip>
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource ChipButton}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsCountry}" Value="True">
+                                                            <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                        </Button>
                                         <Button Content="✕" Style="{StaticResource IconButton}"
-                                                Command="{Binding DataContext.ForgetSavedIpCommand,
+                                                Command="{Binding DataContext.ForgetSavedTargetCommand,
                                                                   RelativeSource={RelativeSource AncestorType=Window}}"
                                                 CommandParameter="{Binding}"
-                                                ToolTip="Forget this address" />
+                                                ToolTip="Forget this entry" />
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
@@ -475,9 +654,17 @@
                                                FontSize="{StaticResource FontSizeTiny}"
                                                Foreground="{StaticResource TextMutedBrush}"
                                                Width="60" VerticalAlignment="Top" Margin="0,1,10,0" />
-                                    <TextBlock Grid.Column="1" Text="{Binding Message}" TextWrapping="Wrap"
+                                    <TextBlock Grid.Column="1" TextWrapping="Wrap"
                                                FontSize="{StaticResource FontSizeSmall}"
-                                               Foreground="{Binding Level, Converter={StaticResource LogLevelToBrush}}" />
+                                               Foreground="{Binding Level, Converter={StaticResource LogLevelToBrush}}">
+                                        <TextBlock.Text>
+                                            <MultiBinding Converter="{StaticResource MaskIp}">
+                                                <Binding Path="Message" />
+                                                <Binding Path="DataContext.HideIps"
+                                                         RelativeSource="{RelativeSource AncestorType=Window}" />
+                                            </MultiBinding>
+                                        </TextBlock.Text>
+                                    </TextBlock>
                                 </Grid>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>

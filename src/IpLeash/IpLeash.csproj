@@ -27,6 +27,11 @@
 
   <ItemGroup>
     <Resource Include="Assets\*.ico" />
+    <!-- Country flags, one PNG per ISO 3166-1 alpha-2 code plus a _unknown placeholder. Bundled
+         rather than fetched so a flag never depends on the network the app exists to police.
+         The .ico glob above does not recurse and the SDK has no implicit Resource glob for
+         .png, so this entry is what puts them in IpLeash.g.resources. -->
+    <Resource Include="Assets\Flags\*.png" />
   </ItemGroup>
 
   <ItemGroup>

@@ -25,7 +25,11 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
     private readonly IDialogService _dialogService;
     private readonly IProcessWatcher _processWatcher;
     private readonly IAppDiscoveryService _discovery;
+    private readonly IGeoIpService _geo;
     private readonly SynchronizationContext? _uiContext;
+
+    /// <summary>Bounds the background chip-flag lookups to this ViewModel's lifetime.</summary>
+    private readonly CancellationTokenSource _lifetimeCts = new();
 
     private bool _suppressSave;
     private bool _disposed;
@@ -35,13 +39,15 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
         ISettingsStore settingsStore,
         IDialogService dialogService,
         IProcessWatcher processWatcher,
-        IAppDiscoveryService discovery)
+        IAppDiscoveryService discovery,
+        IGeoIpService geo)
     {
         _engine = engine;
         _settingsStore = settingsStore;
         _dialogService = dialogService;
         _processWatcher = processWatcher;
         _discovery = discovery;
+        _geo = geo;
 
         // Captured on the UI thread at construction; every engine callback is posted through it.
         _uiContext = SynchronizationContext.Current;
@@ -50,25 +56,28 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
 
         _suppressSave = true;
         var settings = _settingsStore.Load();
+
+        // Mode first: both fields validate on assignment, and which of them is required depends
+        // on the mode, so setting it afterwards would leave a stale error behind.
+        MatchMode = settings.MatchMode;
         ExpectedIp = settings.ExpectedPublicIp;
+        ExpectedCountry = CountryCatalog.Find(settings.ExpectedCountryCode);
         PollSeconds = settings.ClampedPollSeconds;
+        HideIps = settings.HideIpAddresses;
 
         foreach (var app in settings.Apps)
         {
             Apps.Add(CreateAppViewModel(app));
         }
 
-        foreach (var ip in settings.SavedExpectedIps)
+        foreach (var target in settings.SavedTargets)
         {
-            SavedIps.Add(ip);
+            SavedTargets.Add(CreateSavedTarget(target));
         }
 
-        // The address in use is always offered back as a chip, even if its chip was deleted:
-        // the list should never omit the one address the app is currently enforcing.
-        if (!string.IsNullOrWhiteSpace(ExpectedIp) && !SavedIps.Contains(ExpectedIp))
-        {
-            SavedIps.Add(ExpectedIp);
-        }
+        // The target in use is always offered back as a chip, even if its chip was deleted: the
+        // list should never omit the one thing the app is currently enforcing.
+        EnsureCurrentTargetSaved();
 
         _suppressSave = false;
 
@@ -95,25 +104,62 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
                 LogLevel.Error,
                 "Not running as administrator — firewall rules cannot be created. Restart IpLeash elevated."));
         }
+
+        _ = FillMissingChipFlagsAsync();
     }
 
     // ---- Configuration -------------------------------------------------------------------
 
     /// <summary>
+    /// Which rule decides a match, for the whole list at once. Exact IP is the original
+    /// behaviour and stays the default.
+    /// </summary>
+    [ObservableProperty]
+    private MatchMode _matchMode = MatchMode.ExactIp;
+
+    public bool IsExactIpMode => MatchMode == MatchMode.ExactIp;
+
+    public bool IsCountryMode => MatchMode == MatchMode.Country;
+
+    /// <summary>
     /// One expected IP for the whole list: when the machine is not on it, every enabled app is
-    /// blocked together.
+    /// blocked together. Only enforced in <see cref="MatchMode.ExactIp"/>.
+    ///
+    /// [Required] is deliberately absent — it has no conditional form, and this field is
+    /// irrelevant in country mode. The empty case is handled inside the validator instead, which
+    /// can see which mode is active.
     /// </summary>
     [ObservableProperty]
     [NotifyDataErrorInfo]
-    [NotifyCanExecuteChangedFor(nameof(SaveExpectedIpCommand))]
-    [Required(ErrorMessage = "Enter the expected public IP.")]
+    [NotifyCanExecuteChangedFor(nameof(SaveExpectedTargetCommand))]
     [CustomValidation(typeof(MainViewModel), nameof(ValidateExpectedIp))]
     private string _expectedIp = string.Empty;
 
-    /// <summary>Previously used expected addresses, offered as one-click chips.</summary>
-    public ObservableCollection<string> SavedIps { get; } = [];
+    /// <summary>The country to lock to. Only enforced in <see cref="MatchMode.Country"/>.</summary>
+    [ObservableProperty]
+    [NotifyDataErrorInfo]
+    [NotifyCanExecuteChangedFor(nameof(SaveExpectedTargetCommand))]
+    [CustomValidation(typeof(MainViewModel), nameof(ValidateExpectedCountry))]
+    private CountryOption? _expectedCountry;
 
-    public bool HasSavedIps => SavedIps.Count > 0;
+    /// <summary>Every lockable country, for the picker.</summary>
+    public IReadOnlyList<CountryOption> Countries => CountryCatalog.All;
+
+    /// <summary>
+    /// Masks every address on screen. Display only — it changes nothing about what is compared,
+    /// saved, or blocked, so it is safe to leave on permanently.
+    /// </summary>
+    [ObservableProperty]
+    private bool _hideIps;
+
+    public string HideIpsToolTip => HideIps
+        ? "Addresses are hidden. Click to show them."
+        : "Hide every IP address on screen, for screenshots and screen sharing.";
+
+    /// <summary>Previously used targets, addresses and countries alike, offered as one-click chips.</summary>
+    public ObservableCollection<SavedTargetViewModel> SavedTargets { get; } = [];
+
+    public bool HasSavedTargets => SavedTargets.Count > 0;
 
     [ObservableProperty]
     [NotifyDataErrorInfo]
@@ -148,6 +194,25 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
     [NotifyCanExecuteChangedFor(nameof(UseDetectedIpCommand))]
     private bool _hasDetectedIp;
 
+    /// <summary>ISO alpha-2 of the current public IP, or null. Drives the flag beside it.</summary>
+    [ObservableProperty]
+    private string? _currentCountryCode;
+
+    [ObservableProperty]
+    private string _currentCountryName = "unknown";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(UseDetectedCountryCommand))]
+    private bool _hasCurrentCountry;
+
+    /// <summary>
+    /// Warns that the country on display belongs to the proxy's exit, not this machine. Not a
+    /// failure — the user may want exactly that — but it changes what the flag means.
+    /// </summary>
+    public string CountryToolTip => ProxyAffectsPublicIp
+        ? $"{CurrentCountryName} — via proxy, so this is the proxy's exit country"
+        : CurrentCountryName;
+
     [ObservableProperty]
     private string _proxyText = "not configured";
 
@@ -169,7 +234,8 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
     [NotifyCanExecuteChangedFor(nameof(AddFromRunningProcessCommand))]
     [NotifyCanExecuteChangedFor(nameof(DetectKnownAppsCommand))]
     [NotifyCanExecuteChangedFor(nameof(RemoveAppCommand))]
-    [NotifyCanExecuteChangedFor(nameof(SaveExpectedIpCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SaveExpectedTargetCommand))]
+    [NotifyCanExecuteChangedFor(nameof(UseDetectedCountryCommand))]
     private bool _isMonitoring;
 
     /// <summary>False when the process lacks the rights netsh needs; disables Start and shows a banner.</summary>
@@ -364,52 +430,198 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
     private void UseDetectedIp()
     {
         ExpectedIp = PublicIpText;
-        SaveExpectedIp();
+        SaveExpectedTarget();
     }
 
     private bool CanUseDetectedIp() => HasDetectedIp && !IsMonitoring;
 
-    [RelayCommand(CanExecute = nameof(CanSaveExpectedIp))]
-    private void SaveExpectedIp()
+    /// <summary>Captures the country the machine is currently in as the expected one.</summary>
+    [RelayCommand(CanExecute = nameof(CanUseDetectedCountry))]
+    private void UseDetectedCountry()
     {
-        var value = ExpectedIp.Trim();
-        if (value.Length == 0 || SavedIps.Contains(value))
+        if (CountryCatalog.Find(CurrentCountryCode) is not { } option)
+        {
+            // Providers can report codes that are not lockable (EU for anycast ranges, AP for the
+            // APNIC region). Displayable, but there is nothing meaningful to pin to.
+            _dialogService.ShowInfo(
+                "Cannot lock to this country",
+                $"The current address reports “{CurrentCountryName}”, which is not an ISO country " +
+                "that can be locked to. Pick a country from the list instead.");
+            return;
+        }
+
+        ExpectedCountry = option;
+        SaveExpectedTarget();
+    }
+
+    private bool CanUseDetectedCountry() => HasCurrentCountry && !IsMonitoring;
+
+    [RelayCommand(CanExecute = nameof(CanSaveExpectedTarget))]
+    private void SaveExpectedTarget()
+    {
+        SavedTargetViewModel chip;
+
+        if (MatchMode == MatchMode.Country)
+        {
+            if (ExpectedCountry is not { } country)
+            {
+                return;
+            }
+
+            chip = CreateSavedTarget(SavedTarget.ForCountry(country.Code));
+        }
+        else
+        {
+            var value = ExpectedIp.Trim();
+            if (value.Length == 0)
+            {
+                return;
+            }
+
+            chip = CreateSavedTarget(SavedTarget.ForIp(value));
+        }
+
+        if (SavedTargets.Any(existing => existing.Matches(chip)))
         {
             return;
         }
 
-        SavedIps.Insert(0, value);
-        OnPropertyChanged(nameof(HasSavedIps));
+        SavedTargets.Insert(0, chip);
+        OnPropertyChanged(nameof(HasSavedTargets));
         SaveSettings();
-        AppendLog(new LogEntry(DateTimeOffset.Now, LogLevel.Info, $"Saved expected IP {value}."));
+        AppendLog(new LogEntry(DateTimeOffset.Now, LogLevel.Info, $"Saved lock target {chip.DisplayText}."));
+
+        _ = FillMissingChipFlagsAsync();
     }
 
-    // Disabled while monitoring for the same reason the field itself is: the address is locked,
-    // so offering to save it would be an action with nothing to act on.
-    private bool CanSaveExpectedIp() =>
+    // Disabled while monitoring for the same reason the fields themselves are: the target is
+    // locked, so offering to save it would be an action with nothing to act on.
+    private bool CanSaveExpectedTarget() =>
         !IsMonitoring
-        && !string.IsNullOrWhiteSpace(ExpectedIp)
-        && !GetErrors(nameof(ExpectedIp)).Cast<object>().Any();
+        && (MatchMode == MatchMode.Country
+            ? ExpectedCountry is not null
+            : !string.IsNullOrWhiteSpace(ExpectedIp)
+              && !GetErrors(nameof(ExpectedIp)).Cast<object>().Any());
 
     [RelayCommand]
-    private void UseSavedIp(string? ip)
+    private void UseSavedTarget(SavedTargetViewModel? target)
     {
-        if (!string.IsNullOrWhiteSpace(ip) && !IsMonitoring)
-        {
-            ExpectedIp = ip;
-        }
-    }
-
-    [RelayCommand]
-    private void ForgetSavedIp(string? ip)
-    {
-        if (ip is null || !SavedIps.Remove(ip))
+        if (target is null || IsMonitoring)
         {
             return;
         }
 
-        OnPropertyChanged(nameof(HasSavedIps));
+        // Mode first, so the field that is about to be set is the one being validated.
+        MatchMode = target.Kind;
+
+        if (target.Kind == MatchMode.Country)
+        {
+            ExpectedCountry = CountryCatalog.Find(target.CountryCode);
+        }
+        else
+        {
+            ExpectedIp = target.Ip;
+        }
+    }
+
+    [RelayCommand]
+    private void ForgetSavedTarget(SavedTargetViewModel? target)
+    {
+        if (target is null || !SavedTargets.Remove(target))
+        {
+            return;
+        }
+
+        OnPropertyChanged(nameof(HasSavedTargets));
         SaveSettings();
+    }
+
+    private SavedTargetViewModel CreateSavedTarget(SavedTarget model)
+    {
+        string? cachedCode = null;
+
+        // Seeded from the cache so a relaunch paints the right flags immediately, with no
+        // network round trip and no flicker.
+        if (model.Kind == MatchMode.ExactIp && IPAddress.TryParse(model.Ip.Trim(), out var address))
+        {
+            cachedCode = _geo.TryGetCached(address)?.Code;
+        }
+
+        return new SavedTargetViewModel(model, cachedCode);
+    }
+
+    private void EnsureCurrentTargetSaved()
+    {
+        SavedTargetViewModel? chip = null;
+
+        if (MatchMode == MatchMode.Country && ExpectedCountry is { } country)
+        {
+            chip = CreateSavedTarget(SavedTarget.ForCountry(country.Code));
+        }
+        else if (MatchMode == MatchMode.ExactIp && !string.IsNullOrWhiteSpace(ExpectedIp))
+        {
+            chip = CreateSavedTarget(SavedTarget.ForIp(ExpectedIp));
+        }
+
+        if (chip is not null && !SavedTargets.Any(existing => existing.Matches(chip)))
+        {
+            SavedTargets.Add(chip);
+        }
+    }
+
+    /// <summary>
+    /// Resolves the country of any address chip that does not have one yet.
+    ///
+    /// Sequential rather than parallel, so the geolocation service's request spacing is honoured
+    /// rather than fought. Gives up after a few consecutive failures: the results are cached, so
+    /// the next launch simply tries again.
+    /// </summary>
+    private async Task FillMissingChipFlagsAsync()
+    {
+        const int MaxConsecutiveFailures = 3;
+
+        var pending = SavedTargets.Where(t => t.NeedsFlagLookup).ToList();
+        if (pending.Count == 0)
+        {
+            return;
+        }
+
+        var failures = 0;
+
+        foreach (var chip in pending)
+        {
+            if (_lifetimeCts.IsCancellationRequested || failures >= MaxConsecutiveFailures)
+            {
+                return;
+            }
+
+            if (!IPAddress.TryParse(chip.Ip, out var address))
+            {
+                continue;
+            }
+
+            try
+            {
+                var country = await _geo.GetCountryAsync(address, _lifetimeCts.Token).ConfigureAwait(false);
+
+                if (country is null)
+                {
+                    failures++;
+                    continue;
+                }
+
+                failures = 0;
+                Post(() => chip.FlagCode = country.Code);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch
+            {
+                failures++;
+            }
+        }
     }
 
     // ---- Monitoring commands -------------------------------------------------------------
@@ -436,20 +648,74 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
 
     partial void OnExpectedIpChanged(string value) => SaveSettings();
 
+    partial void OnExpectedCountryChanged(CountryOption? value) => SaveSettings();
+
     partial void OnPollSecondsChanged(int value) => SaveSettings();
+
+    partial void OnHideIpsChanged(bool value)
+    {
+        OnPropertyChanged(nameof(HideIpsToolTip));
+        SaveSettings();
+    }
+
+    [RelayCommand]
+    private void ToggleHideIps() => HideIps = !HideIps;
+
+    partial void OnProxyAffectsPublicIpChanged(bool value) => OnPropertyChanged(nameof(CountryToolTip));
+
+    partial void OnCurrentCountryNameChanged(string value) => OnPropertyChanged(nameof(CountryToolTip));
+
+    /// <summary>
+    /// Both fields have to be re-checked when the mode changes. Each is only required in its own
+    /// mode, so an error left over from the other one would keep HasErrors true and Start
+    /// disabled with nothing on screen to fix.
+    /// </summary>
+    partial void OnMatchModeChanged(MatchMode value)
+    {
+        OnPropertyChanged(nameof(IsExactIpMode));
+        OnPropertyChanged(nameof(IsCountryMode));
+
+        ValidateProperty(ExpectedIp, nameof(ExpectedIp));
+        ValidateProperty(ExpectedCountry, nameof(ExpectedCountry));
+
+        StartCommand.NotifyCanExecuteChanged();
+        SaveExpectedTargetCommand.NotifyCanExecuteChanged();
+        SaveSettings();
+    }
 
     // ---- Validation ----------------------------------------------------------------------
 
+    // ObservableValidator builds its context with `new ValidationContext(this)`, so
+    // context.ObjectInstance is this ViewModel — which is how these two see the current mode.
+
     public static ValidationResult? ValidateExpectedIp(string? value, ValidationContext context)
     {
+        if (context.ObjectInstance is MainViewModel { MatchMode: not MatchMode.ExactIp })
+        {
+            // Irrelevant in country mode, so it must not gate Start.
+            return ValidationResult.Success;
+        }
+
         if (string.IsNullOrWhiteSpace(value))
         {
-            return ValidationResult.Success;   // [Required] already reports the empty case.
+            return new ValidationResult("Enter the expected public IP.");
         }
 
         return IPAddress.TryParse(value.Trim(), out _)
             ? ValidationResult.Success
             : new ValidationResult("Not a valid IP address.");
+    }
+
+    public static ValidationResult? ValidateExpectedCountry(CountryOption? value, ValidationContext context)
+    {
+        if (context.ObjectInstance is MainViewModel { MatchMode: not MatchMode.Country })
+        {
+            return ValidationResult.Success;
+        }
+
+        return value is null
+            ? new ValidationResult("Pick the country to lock to.")
+            : ValidationResult.Success;
     }
 
     // ---- Engine plumbing -----------------------------------------------------------------
@@ -478,6 +744,10 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
             IpProbeState.Failed => "unavailable",
             _ => "—",
         };
+
+        CurrentCountryCode = snapshot.CountryCode;
+        CurrentCountryName = snapshot.CountryName ?? "unknown";
+        HasCurrentCountry = snapshot.GeoState == GeoProbeState.Resolved && snapshot.CountryCode is not null;
 
         ProxyText = snapshot.Proxy.Summary;
         ProxyDetail = snapshot.Proxy.Detail;
@@ -527,9 +797,20 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
     private AppSettings BuildSettings() => new()
     {
         Apps = Apps.Select(a => a.ToModel()).ToList(),
+        MatchMode = MatchMode,
         ExpectedPublicIp = ExpectedIp.Trim(),
-        SavedExpectedIps = SavedIps.ToList(),
+        ExpectedCountryCode = ExpectedCountry?.Code ?? string.Empty,
+        SavedTargets = SavedTargets.Select(t => t.ToModel()).ToList(),
+
+        // Written as a mirror of the address entries so a build without country locking can still
+        // read this file. Never read back: SavedTargets is authoritative.
+        SavedExpectedIps = SavedTargets
+            .Where(t => t.Kind == MatchMode.ExactIp)
+            .Select(t => t.Ip)
+            .ToList(),
+
         PollSeconds = PollSeconds,
+        HideIpAddresses = HideIps,
     };
 
     private void SaveSettings()
@@ -567,5 +848,10 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
         _disposed = true;
         _engine.SnapshotChanged -= OnSnapshotChanged;
         _engine.LogEmitted -= OnLogEmitted;
+
+        // Stops any chip-flag lookup still in flight: this ViewModel outlives nothing, and the
+        // geolocation service it is calling into is about to be disposed with the container.
+        _lifetimeCts.Cancel();
+        _lifetimeCts.Dispose();
     }
 }

@@ -119,8 +119,12 @@ public partial class App : Application
         services.AddSingleton<IProcessWatcher, ProcessWatcher>();
         services.AddSingleton<IAppDiscoveryService, AppDiscoveryService>();
         services.AddSingleton<IProxyService, ProxyService>();
+        services.AddSingleton<IGeoCacheStore, GeoCacheStore>();
 
         // Registered concretely and then aliased, so the container disposes exactly one instance.
+        services.AddSingleton<GeoIpService>();
+        services.AddSingleton<IGeoIpService>(sp => sp.GetRequiredService<GeoIpService>());
+
         services.AddSingleton<MonitorEngine>();
         services.AddSingleton<IMonitorEngine>(sp => sp.GetRequiredService<MonitorEngine>());
 
@@ -273,9 +277,14 @@ public partial class App : Application
 
         var blockedApps = snapshot.Apps.Count(a => a.Executables.Any(x => x.IsBlocked));
 
+        // The tray tooltip is as screenshot-visible as the window, so it honours the same setting.
+        var publicIp = _viewModel?.HideIps == true
+            ? IpMasker.MaskAddress(snapshot.PublicIp)
+            : snapshot.PublicIp;
+
         var state = snapshot.Status switch
         {
-            MonitorStatus.Allowed => $"Allowed — public IP {snapshot.PublicIp}",
+            MonitorStatus.Allowed => $"Allowed — public IP {publicIp}",
             MonitorStatus.Blocked => $"BLOCKED — {blockedApps} app(s) cut off",
             MonitorStatus.Unknown => $"Public IP unknown — {blockedApps} app(s) cut off",
             _ => "Not monitoring",
