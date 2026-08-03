@@ -23,7 +23,7 @@ public sealed class FirewallService : IFirewallService
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "netsh.exe");
 
     private readonly IBlockStateStore _stateStore;
-    private readonly Lock _trackedGate = new();
+    private readonly object _trackedGate = new();
 
     /// <summary>Paths believed to be blocked right now; mirrored to <see cref="IBlockStateStore"/>.</summary>
     private readonly HashSet<string> _tracked = new(StringComparer.OrdinalIgnoreCase);

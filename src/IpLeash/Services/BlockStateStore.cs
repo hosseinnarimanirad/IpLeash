@@ -11,7 +11,7 @@ public sealed class BlockStateStore : IBlockStateStore
     private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = true };
 
     private readonly string _path;
-    private readonly Lock _gate = new();
+    private readonly object _gate = new();
 
     public BlockStateStore()
         : this(Path.Combine(AppPaths.DataDirectory, "active-block.json"))

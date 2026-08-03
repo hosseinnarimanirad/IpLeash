@@ -41,7 +41,7 @@ public static partial class IpMasker
         @"(?<![0-9A-Fa-f:.])(?:[0-9A-Fa-f]{0,4}:)+\d{1,3}(?:\.\d{1,3}){3}(?!\.?\d)" +
         @"|\b\d{1,3}(?:\.\d{1,3}){3}\b" +
         @"|(?<![0-9A-Fa-f:.])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![0-9A-Fa-f:])")]
-    private static partial Regex CandidateRegex { get; }
+    private static partial Regex CandidateRegex();
 
     /// <summary>Masks every address in a string. Returns the input unchanged when it holds none.</summary>
     public static string? Mask(string? text)
@@ -51,7 +51,7 @@ public static partial class IpMasker
             return text;
         }
 
-        return CandidateRegex.Replace(text, static match =>
+        return CandidateRegex().Replace(text, static match =>
             IPAddress.TryParse(match.Value, out var address) ? MaskFor(address) : match.Value);
     }
 

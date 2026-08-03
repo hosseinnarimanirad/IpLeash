@@ -25,7 +25,7 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
     // Serializes evaluation. The poll timer and the NetworkAddressChanged event can fire at the
     // same moment, and two concurrent evaluations would issue conflicting netsh calls.
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly Lock _stateLock = new();
+    private readonly object _stateLock = new();
 
     private AppSettings? _settings;
     private CancellationTokenSource? _sessionCts;

@@ -11,14 +11,19 @@ address, every monitored app stops talking to the internet until the expected IP
 ## Requirements
 
 - Windows 10/11
-- .NET 9 desktop runtime (or the SDK)
+- .NET 8 desktop runtime (or the SDK)
 - **Administrator rights** — creating firewall rules requires them, so the app is manifested
   `requireAdministrator` and prompts for UAC at launch.
 
 ## Build and run
 
 Run `dotnet build` from the repository root, then launch the built `IpLeash.exe` from
-`src\IpLeash\bin\Debug\net9.0-windows`. Windows will prompt for elevation.
+`src\IpLeash\bin\Debug\net8.0-windows`. Windows will prompt for elevation.
+
+Two solution files sit side by side and describe the same single project: `IpLeash.sln` opens in
+Visual Studio 2022, and `IpLeash.slnx` is the newer XML format for VS 2026, Rider, and
+`dotnet build`. Open whichever your tooling prefers — but keep them in step if a project is ever
+added.
 
 ## Behaviour worth knowing
 

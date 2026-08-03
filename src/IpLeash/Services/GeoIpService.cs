@@ -72,7 +72,7 @@ public sealed class GeoIpService : IGeoIpService, IDisposable
     private readonly SemaphoreSlim _networkGate = new(1, 1);
     private DateTimeOffset _lastNetworkCall = DateTimeOffset.MinValue;
 
-    private readonly Lock _saveLock = new();
+    private readonly object _saveLock = new();
     private DateTimeOffset _lastSave = DateTimeOffset.MinValue;
     private bool _dirty;
     private bool _disposed;

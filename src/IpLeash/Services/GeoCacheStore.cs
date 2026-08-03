@@ -17,7 +17,7 @@ public sealed class GeoCacheStore : IGeoCacheStore
     private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = true };
 
     private readonly string _path;
-    private readonly Lock _gate = new();
+    private readonly object _gate = new();
 
     public GeoCacheStore()
         : this(Path.Combine(AppPaths.DataDirectory, "geo-cache.json"))
