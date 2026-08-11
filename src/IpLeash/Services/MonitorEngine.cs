@@ -12,6 +12,15 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
     /// <summary>How often the process/adapter display is refreshed. Cheap, purely informational.</summary>
     private static readonly TimeSpan FastRefreshInterval = TimeSpan.FromSeconds(2);
 
+    /// <summary>
+    /// How long a user-initiated check waits for its turn at <see cref="_gate"/>.
+    ///
+    /// Comfortably longer than one full evaluation (three IP providers at 5s each, plus the
+    /// geolocation chain's 8s budget), so a check pressed while a poll tick is in flight queues
+    /// behind it and still runs, rather than being dropped.
+    /// </summary>
+    private static readonly TimeSpan ManualCheckGateWait = TimeSpan.FromSeconds(30);
+
     private readonly IPublicIpService _publicIp;
     private readonly ILocalIpService _localIp;
     private readonly IProcessWatcher _processWatcher;
@@ -95,6 +104,38 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
     }
 
     public bool IsElevated => _firewall.IsElevated;
+
+    /// <summary>
+    /// The current session's cancellation token, or an already-cancelled one when there is no
+    /// session left.
+    ///
+    /// Every caller reaches this after testing <see cref="_isRunning"/>, and that test can go
+    /// stale before the token is read: <see cref="StopAsync"/> clears the flag and only then
+    /// disposes the source. Touching a disposed <see cref="CancellationTokenSource"/> throws, and
+    /// two of the three callers are event handlers on pool threads where that throw would take
+    /// the process down — for a kill-switch, straight into leaving rules behind. Cancelled is the
+    /// right answer in that window anyway: the session it would have belonged to is over.
+    /// </summary>
+    private CancellationToken SessionToken
+    {
+        get
+        {
+            var cts = Volatile.Read(ref _sessionCts);
+            if (cts is null)
+            {
+                return new CancellationToken(canceled: true);
+            }
+
+            try
+            {
+                return cts.Token;
+            }
+            catch (ObjectDisposedException)
+            {
+                return new CancellationToken(canceled: true);
+            }
+        }
+    }
 
     public event EventHandler<MonitorSnapshot>? SnapshotChanged;
 
@@ -200,7 +241,7 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
             $"Monitoring started — {appCount} app{(appCount == 1 ? "" : "s")} ({targets.Count} executable{(targets.Count == 1 ? "" : "s")}), " +
             $"{target}, polling every {settings.ClampedPollSeconds}s.");
 
-        await EvaluateAsync(_sessionCts.Token).ConfigureAwait(false);
+        await EvaluateAsync(SessionToken).ConfigureAwait(false);
     }
 
     public async Task StopAsync(CancellationToken ct = default)
@@ -270,13 +311,22 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
     public Task CheckNowAsync(CancellationToken ct = default)
     {
         // While stopped this still refreshes the reading — it just cannot change any rules.
+        //
+        // Both paths are told this was asked for: a check the user pressed has to announce itself
+        // and wait its turn, where a timer tick may quietly skip.
         return Volatile.Read(ref _isRunning)
-            ? EvaluateAsync(_sessionCts?.Token ?? ct)
-            : ProbeAsync(ct);
+            ? EvaluateAsync(SessionToken, announce: true)
+            : ProbeAsync(ct, announce: true);
     }
 
     /// <inheritdoc />
-    public async Task ProbeAsync(CancellationToken ct = default)
+    public Task ProbeAsync(CancellationToken ct = default) => ProbeAsync(ct, announce: false);
+
+    /// <param name="announce">
+    /// True when a person pressed Check now, which makes this wait its turn at the gate instead of
+    /// skipping and say so if it never gets one. See <see cref="EvaluateAsync"/>.
+    /// </param>
+    private async Task ProbeAsync(CancellationToken ct, bool announce)
     {
         if (Volatile.Read(ref _isRunning))
         {
@@ -288,8 +338,14 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
         // Proxy first: it is part of interpreting whatever address comes back.
         RefreshProxy();
 
-        if (!await _gate.WaitAsync(TimeSpan.Zero, ct).ConfigureAwait(false))
+        var entry = await TryEnterGateAsync(announce ? ManualCheckGateWait : TimeSpan.Zero, ct).ConfigureAwait(false);
+        if (entry != GateEntry.Acquired)
         {
+            if (announce && entry == GateEntry.Busy)
+            {
+                Log(LogLevel.Warning, GateBusyMessage);
+            }
+
             return;
         }
 
@@ -390,11 +446,68 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
         }
     }
 
-    private async Task EvaluateAsync(CancellationToken ct)
+    /// <summary>Outcome of trying to take <see cref="_gate"/>.</summary>
+    private enum GateEntry
     {
-        if (!await _gate.WaitAsync(TimeSpan.Zero, ct).ConfigureAwait(false))
+        /// <summary>Held by the caller, which must release it.</summary>
+        Acquired,
+
+        /// <summary>Another evaluation held it for the whole wait.</summary>
+        Busy,
+
+        /// <summary>The session ended while queued. Nothing left to evaluate.</summary>
+        Cancelled,
+    }
+
+    private const string GateBusyMessage =
+        "A check was already running and did not finish in time — the reading on screen is from that check, not a new one.";
+
+    /// <summary>
+    /// Takes the evaluation gate, distinguishing "someone else has it" from "the session ended
+    /// while we queued".
+    ///
+    /// Separated out because the acquisition used to sit outside the try block that owns the rest
+    /// of an evaluation: <see cref="StopAsync"/> cancels the session token before it takes the gate
+    /// itself, so a waiter being cancelled is routine, and it would fault a task the timer and the
+    /// network hook both start with no one awaiting it.
+    /// </summary>
+    private async Task<GateEntry> TryEnterGateAsync(TimeSpan wait, CancellationToken ct)
+    {
+        try
         {
-            // An evaluation is already running; its result will be current enough.
+            return await _gate.WaitAsync(wait, ct).ConfigureAwait(false)
+                ? GateEntry.Acquired
+                : GateEntry.Busy;
+        }
+        catch (OperationCanceledException)
+        {
+            return GateEntry.Cancelled;
+        }
+        catch (ObjectDisposedException)
+        {
+            // The engine was disposed while this waited.
+            return GateEntry.Cancelled;
+        }
+    }
+
+    /// <param name="announce">
+    /// True when a person pressed Check now rather than a timer or the network hook firing. Such a
+    /// check waits for its turn at the gate instead of skipping, shows the pending state while it
+    /// runs, and logs its result even when nothing changed — a check that confirms the current
+    /// address used to print nothing at all, which is indistinguishable from a dead button.
+    /// </param>
+    private async Task EvaluateAsync(CancellationToken ct, bool announce = false)
+    {
+        var entry = await TryEnterGateAsync(announce ? ManualCheckGateWait : TimeSpan.Zero, ct).ConfigureAwait(false);
+        if (entry != GateEntry.Acquired)
+        {
+            // An evaluation is already running; its result will be current enough for the timer and
+            // the network hook. A check someone asked for has to account for itself.
+            if (announce && entry == GateEntry.Busy)
+            {
+                Log(LogLevel.Warning, GateBusyMessage);
+            }
+
             return;
         }
 
@@ -404,6 +517,20 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
             if (settings is null || !Volatile.Read(ref _isRunning))
             {
                 return;
+            }
+
+            if (announce)
+            {
+                // The reading is now known to be stale rather than merely old, and the lookup can
+                // take seconds. Both fields, so a flag from the previous address cannot sit beside
+                // a value that has not been checked — the same rule the idle probe follows.
+                lock (_stateLock)
+                {
+                    _probeState = IpProbeState.Checking;
+                    _geoState = GeoProbeState.Checking;
+                }
+
+                Publish();
             }
 
             IPAddress? current;
@@ -467,9 +594,11 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
                 _lastCheckedAt = DateTimeOffset.Now;
             }
 
-            if (previousIp != current?.ToString())
+            // `announce` forces the line: an unchanged address is precisely the answer someone
+            // pressing Check now is asking for, and silence does not deliver it.
+            if (previousIp != current?.ToString() || announce)
             {
-                Log(LogLevel.Info, current is null
+                Log(current is null ? LogLevel.Warning : LogLevel.Info, current is null
                     ? "Public IP could not be determined."
                     : $"Public IP is {current}{DescribeCountry(country)}.");
             }
@@ -498,6 +627,23 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
         }
         finally
         {
+            // A pending state that outlives the evaluation that set it would strand the display on
+            // "checking…" — reachable by cancelling mid-lookup (Check now, then Stop) or by an
+            // early return after the announce above. Only ever true here when this evaluation is
+            // the one that announced, since nothing else can set it while the gate is held.
+            lock (_stateLock)
+            {
+                if (_probeState == IpProbeState.Checking)
+                {
+                    _probeState = IpProbeState.Unknown;
+                }
+
+                if (_geoState == GeoProbeState.Checking)
+                {
+                    _geoState = GeoProbeState.Unknown;
+                }
+            }
+
             _gate.Release();
             Publish();
         }
@@ -688,7 +834,7 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
     }
 
     private void OnEvalTimerElapsed(object? sender, ElapsedEventArgs e) =>
-        _ = EvaluateAsync(_sessionCts?.Token ?? CancellationToken.None);
+        _ = EvaluateAsync(SessionToken);
 
     private void OnFastTimerElapsed(object? sender, ElapsedEventArgs e) => RefreshFastState();
 
@@ -703,7 +849,7 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
 
         // While monitoring this reconciles rules; while idle it only refreshes the display.
         _ = Volatile.Read(ref _isRunning)
-            ? EvaluateAsync(_sessionCts?.Token ?? CancellationToken.None)
+            ? EvaluateAsync(SessionToken)
             : ProbeAsync(CancellationToken.None);
     }
 

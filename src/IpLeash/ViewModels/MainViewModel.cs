@@ -229,7 +229,6 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(StartCommand))]
     [NotifyCanExecuteChangedFor(nameof(StopCommand))]
-    [NotifyCanExecuteChangedFor(nameof(CheckNowCommand))]
     [NotifyCanExecuteChangedFor(nameof(AddByBrowseCommand))]
     [NotifyCanExecuteChangedFor(nameof(AddFromRunningProcessCommand))]
     [NotifyCanExecuteChangedFor(nameof(DetectKnownAppsCommand))]
@@ -641,7 +640,15 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
 
     private bool CanStop() => IsMonitoring;
 
-    [RelayCommand(CanExecute = nameof(CanStop))]
+    /// <summary>
+    /// Deliberately ungated. Refreshing the reading is meaningful in both states — the engine
+    /// routes a stopped check to a display-only probe — and being stopped with a failed reading on
+    /// screen is exactly when a retry is wanted, which is what tying this to CanStop took away.
+    ///
+    /// Nothing needs to guard against a double press either: AsyncRelayCommand disables itself for
+    /// the duration of the returned task, and the engine serializes on top of that.
+    /// </summary>
+    [RelayCommand]
     private Task CheckNowAsync() => _engine.CheckNowAsync();
 
     // ---- Property change hooks -----------------------------------------------------------

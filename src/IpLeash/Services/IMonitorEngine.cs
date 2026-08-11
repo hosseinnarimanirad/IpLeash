@@ -48,6 +48,13 @@ public interface IMonitorEngine
     /// <summary>Stops evaluation and removes every block rule this engine applied.</summary>
     Task StopAsync(CancellationToken ct = default);
 
-    /// <summary>Forces an out-of-band evaluation.</summary>
+    /// <summary>
+    /// Forces an out-of-band check on the user's behalf: a full evaluation while monitoring, a
+    /// display-only <see cref="ProbeAsync"/> while stopped. Valid in either state — being stopped
+    /// is the case where a stale or failed reading most needs a way to be retried.
+    ///
+    /// Unlike the poll tick, this never silently skips because a check is already in flight, and it
+    /// always logs what it found, including when the answer is unchanged.
+    /// </summary>
     Task CheckNowAsync(CancellationToken ct = default);
 }
