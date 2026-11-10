@@ -1,0 +1,465 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="using:IpLeash.Views.Converters"
+        x:Class="IpLeash.Views.MainWindow"
+        Title="IpLeash"
+        Icon="avares://IpLeash/Assets/ipleash.png"
+        Width="880" Height="940" MinWidth="740" MinHeight="680"
+        Background="{StaticResource PageBackgroundBrush}"
+        WindowStartupLocation="CenterScreen">
+
+    <Window.Resources>
+        <conv:StatusToBrushConverter x:Key="StatusToBrush" />
+        <conv:StatusToTextConverter x:Key="StatusToText" />
+        <conv:LogLevelToBrushConverter x:Key="LogLevelToBrush" />
+        <conv:CountryCodeToFlagConverter x:Key="CountryCodeToFlag" />
+        <conv:EnumToBooleanConverter x:Key="EnumToBool" />
+        <conv:MaskIpConverter x:Key="MaskIp" />
+    </Window.Resources>
+
+    <!-- Rows: header, status banner, network, app list, log. The app list is the working area, so
+         it takes the lion's share of what is left and the log keeps only what it needs. -->
+    <Grid Margin="20,18,20,20" RowDefinitions="Auto,Auto,Auto,4*,*">
+
+        <!-- ============================ Header ============================ -->
+        <Grid Grid.Row="0" Margin="2,0,2,16" ColumnDefinitions="*,Auto">
+            <StackPanel>
+                <TextBlock Text="IpLeash" FontSize="{StaticResource FontSizeTitle}"
+                           FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" />
+                <TextBlock Classes="caption" Margin="0,2,0,0" TextWrapping="Wrap"
+                           Text="Freezes the listed applications whenever this Mac's public IP is not the expected one." />
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Classes="primary" Content="Start monitoring" Command="{Binding StartCommand}" />
+                <Button Classes="secondary" Content="Stop" Command="{Binding StopCommand}" />
+                <Button Classes="secondary" Content="Check now" Margin="0" Command="{Binding CheckNowCommand}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ============================ Status banner ============================ -->
+        <Border Grid.Row="1" CornerRadius="{StaticResource CardRadius}" Padding="18,15" Margin="0,0,0,12"
+                BoxShadow="0 2 12 0 #1F0F172A"
+                Background="{Binding Status, Converter={StaticResource StatusToBrush}}">
+            <Grid ColumnDefinitions="Auto,*">
+                <Ellipse Width="10" Height="10" Fill="White" Opacity="0.9"
+                         VerticalAlignment="Top" Margin="0,7,12,0" />
+
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="{Binding Status, Converter={StaticResource StatusToText}}"
+                               FontSize="18" FontWeight="SemiBold" Foreground="White" />
+                    <TextBlock Foreground="#EDF0F4" FontSize="{StaticResource FontSizeBody}"
+                               TextWrapping="Wrap" Margin="0,3,0,0">
+                        <TextBlock.Text>
+                            <MultiBinding Converter="{StaticResource MaskIp}">
+                                <Binding Path="StatusReason" />
+                                <Binding Path="HideIps" />
+                            </MultiBinding>
+                        </TextBlock.Text>
+                    </TextBlock>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ============================ Network ============================ -->
+        <Border Grid.Row="2" Classes="card">
+            <StackPanel>
+                <Grid>
+                    <TextBlock Text="Network" Classes="section" />
+
+                    <!-- Eye toggle, drawn so it does not depend on an icon font. -->
+                    <Button Classes="ghost" HorizontalAlignment="Right" VerticalAlignment="Top"
+                            Margin="0,-4,0,0" Padding="8,0" Height="{StaticResource SmallControlHeight}"
+                            Command="{Binding ToggleHideIpsCommand}"
+                            ToolTip.Tip="{Binding HideIpsToolTip}">
+                        <Canvas Width="18" Height="14">
+                            <Path Data="M 1,7 C 4.5,2 13.5,2 17,7 C 13.5,12 4.5,12 1,7 Z"
+                                  Stroke="{Binding $parent[Button].Foreground}" StrokeThickness="1.3" />
+                            <Ellipse Canvas.Left="6.6" Canvas.Top="4.6" Width="4.8" Height="4.8"
+                                     Fill="{Binding $parent[Button].Foreground}" />
+                            <!-- The slash only appears once addresses are actually hidden. -->
+                            <Line StartPoint="2,12.5" EndPoint="16,1.5"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  StrokeThickness="1.5" StrokeLineCap="Round"
+                                  IsVisible="{Binding HideIps}" />
+                        </Canvas>
+                    </Button>
+                </Grid>
+
+                <!-- Public IP, local adapters and system proxy, side by side. -->
+                <Grid ColumnDefinitions="*,Auto,Auto">
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" MinWidth="170">
+                        <TextBlock Text="PUBLIC IP" Classes="eyebrow" />
+
+                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                            <!-- Hidden while a lookup is pending, so a flag from the previous
+                                 address never sits beside a value that has not been checked. -->
+                            <Image Width="28" Height="20" Margin="0,0,9,0" VerticalAlignment="Center"
+                                   RenderOptions.BitmapInterpolationMode="HighQuality"
+                                   Source="{Binding CurrentCountryCode, Converter={StaticResource CountryCodeToFlag}}"
+                                   ToolTip.Tip="{Binding CountryToolTip}"
+                                   IsVisible="{Binding HasCurrentCountry}" />
+
+                            <TextBlock FontSize="{StaticResource FontSizeDisplay}" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"
+                                       IsVisible="{Binding !IsCheckingPublicIp}">
+                                <TextBlock.Text>
+                                    <MultiBinding Converter="{StaticResource MaskIp}">
+                                        <Binding Path="PublicIpText" />
+                                        <Binding Path="HideIps" />
+                                    </MultiBinding>
+                                </TextBlock.Text>
+                            </TextBlock>
+                            <!-- A pending lookup reads as muted, not as a value. -->
+                            <TextBlock Text="checking…" FontSize="{StaticResource FontSizeTitle}"
+                                       FontWeight="SemiBold" Foreground="{StaticResource TextMutedBrush}"
+                                       VerticalAlignment="Center" IsVisible="{Binding IsCheckingPublicIp}" />
+                        </StackPanel>
+
+                        <TextBlock Text="{Binding CurrentCountryName}" Classes="caption"
+                                   Margin="0,2,0,0" TextTrimming="CharacterEllipsis"
+                                   IsVisible="{Binding HasCurrentCountry}" />
+                        <TextBlock Text="{Binding LastCheckedText}" Classes="caption" Margin="0,2,0,0" />
+                    </StackPanel>
+
+                    <!-- Local adapters -->
+                    <Border Grid.Column="1" Classes="inset" Padding="12,9" Margin="14,0,10,0"
+                            MinWidth="228" MaxWidth="300">
+                        <StackPanel>
+                            <TextBlock Text="LOCAL ADAPTERS" Classes="eyebrow" />
+                            <ScrollViewer MaxHeight="64" VerticalScrollBarVisibility="Auto" Margin="0,5,0,0">
+                                <ItemsControl ItemsSource="{Binding Adapters}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal" Margin="0,1">
+                                                <TextBlock FontFamily="{StaticResource MonoFont}"
+                                                           FontSize="{StaticResource FontSizeTiny}"
+                                                           Foreground="{StaticResource TextPrimaryBrush}"
+                                                           Width="104">
+                                                    <TextBlock.Text>
+                                                        <MultiBinding Converter="{StaticResource MaskIp}">
+                                                            <Binding Path="IpAddress" />
+                                                            <Binding Path="$parent[Window].DataContext.HideIps" />
+                                                        </MultiBinding>
+                                                    </TextBlock.Text>
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding Name}" FontSize="{StaticResource FontSizeTiny}"
+                                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTip.Tip="{Binding Description}" />
+                                                <Border Background="{StaticResource SuccessSubtleBrush}"
+                                                        CornerRadius="3" Padding="5,0" Margin="6,0,0,0"
+                                                        VerticalAlignment="Center" IsVisible="{Binding IsTunnel}">
+                                                    <TextBlock Text="tunnel" Foreground="{StaticResource SuccessBrush}"
+                                                               FontSize="{StaticResource FontSizeTiny}" />
+                                                </Border>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- System proxy -->
+                    <Border Grid.Column="2" Classes="inset" Padding="12,9" MinWidth="164" MaxWidth="210"
+                            ToolTip.Tip="{Binding ProxyDetail}">
+                        <StackPanel>
+                            <TextBlock Text="SYSTEM PROXY" Classes="eyebrow" />
+                            <TextBlock Text="{Binding ProxyText}" FontFamily="{StaticResource MonoFont}"
+                                       FontSize="{StaticResource FontSizeSmall}" Margin="0,5,0,0"
+                                       TextTrimming="CharacterEllipsis"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       IsVisible="{Binding !HasProxy}" />
+                            <TextBlock Text="{Binding ProxyText}" FontFamily="{StaticResource MonoFont}"
+                                       FontSize="{StaticResource FontSizeSmall}" Margin="0,5,0,0"
+                                       TextTrimming="CharacterEllipsis"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       IsVisible="{Binding HasProxy}" />
+                            <TextBlock Text="public IP is the proxy's exit address"
+                                       Foreground="{StaticResource WarningBrush}"
+                                       FontSize="{StaticResource FontSizeTiny}" TextWrapping="Wrap"
+                                       Margin="0,4,0,0" IsVisible="{Binding ProxyAffectsPublicIp}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <Border Classes="divider" Margin="0,14,0,12" />
+
+                <!-- Lock mode, and the poll interval that applies to both modes -->
+                <Grid Margin="0,0,0,10" ColumnDefinitions="*,Auto">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Lock to" Classes="label" Margin="0,0,12,0" />
+                        <RadioButton GroupName="MatchMode" Content="Exact IP" Margin="0,0,16,0"
+                                     IsEnabled="{Binding !IsMonitoring}"
+                                     IsChecked="{Binding MatchMode, Converter={StaticResource EnumToBool}, ConverterParameter=ExactIp}"
+                                     ToolTip.Tip="Allow only one specific public address." />
+                        <RadioButton GroupName="MatchMode" Content="Country"
+                                     IsEnabled="{Binding !IsMonitoring}"
+                                     IsChecked="{Binding MatchMode, Converter={StaticResource EnumToBool}, ConverterParameter=Country}"
+                                     ToolTip.Tip="Allow any public address that geolocates to the chosen country." />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                        <TextBlock Text="Check every" Classes="label" Margin="0,0,10,0" />
+                        <TextBox Classes="field" Width="72" IsEnabled="{Binding !IsMonitoring}"
+                                 Text="{Binding PollSeconds}" />
+                        <TextBlock Text="sec" Classes="label" Margin="8,0,0,0" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- Expected IP -->
+                <StackPanel Orientation="Horizontal" IsVisible="{Binding IsExactIpMode}">
+                    <TextBlock Text="Expected public IP" Classes="label" Margin="0,0,10,0"
+                               VerticalAlignment="Top" Padding="0,7,0,0" />
+                    <!-- The mask is an opaque overlay rather than a swapped-in value, so the
+                         TextBox keeps its real text and its validation the whole time. It is
+                         hit-test-transparent, so a click lands in the box and drops the mask. -->
+                    <Grid Width="180" VerticalAlignment="Top">
+                        <TextBox x:Name="ExpectedIpBox" Classes="field"
+                                 IsEnabled="{Binding !IsMonitoring}"
+                                 Text="{Binding ExpectedIp}" />
+                        <Border Background="{StaticResource SurfaceBrush}" IsHitTestVisible="False"
+                                CornerRadius="{StaticResource ControlRadius}" Margin="2"
+                                Height="26" VerticalAlignment="Top">
+                            <Border.IsVisible>
+                                <MultiBinding Converter="{x:Static BoolConverters.And}">
+                                    <Binding Path="HideIps" />
+                                    <Binding ElementName="ExpectedIpBox" Path="!IsKeyboardFocusWithin" />
+                                </MultiBinding>
+                            </Border.IsVisible>
+                            <TextBlock Text="***.***.***.***" Margin="7,0,0,0" VerticalAlignment="Center"
+                                       FontSize="{StaticResource FontSizeBody}"
+                                       Foreground="{StaticResource TextMutedBrush}" />
+                        </Border>
+                    </Grid>
+                    <Button Classes="ghost" Content="Use detected" Margin="8,0,4,0" VerticalAlignment="Top"
+                            Command="{Binding UseDetectedIpCommand}"
+                            ToolTip.Tip="Set the expected address to the public IP detected right now." />
+                    <Button Classes="ghost" Content="Save" VerticalAlignment="Top"
+                            Command="{Binding SaveExpectedTargetCommand}"
+                            ToolTip.Tip="Remember this address so it can be picked again later." />
+                </StackPanel>
+
+                <!-- Expected country -->
+                <StackPanel IsVisible="{Binding IsCountryMode}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Expected country" Classes="label" Margin="0,0,10,0"
+                                   VerticalAlignment="Top" Padding="0,7,0,0" />
+                        <ComboBox Classes="field" Width="260" VerticalAlignment="Top"
+                                  ItemsSource="{Binding Countries}"
+                                  IsEnabled="{Binding !IsMonitoring}"
+                                  SelectedItem="{Binding ExpectedCountry}"
+                                  PlaceholderText="Pick a country">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Image Width="22" Height="16" Margin="0,0,9,0" VerticalAlignment="Center"
+                                               RenderOptions.BitmapInterpolationMode="HighQuality"
+                                               Source="{Binding Code, Converter={StaticResource CountryCodeToFlag}}" />
+                                        <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+
+                        <Button Classes="ghost" Content="Use detected" Margin="8,0,4,0" VerticalAlignment="Top"
+                                Command="{Binding UseDetectedCountryCommand}"
+                                ToolTip.Tip="Lock to the country the current public IP is in." />
+                        <Button Classes="ghost" Content="Save" VerticalAlignment="Top"
+                                Command="{Binding SaveExpectedTargetCommand}"
+                                ToolTip.Tip="Remember this country so it can be picked again later." />
+                    </StackPanel>
+
+                    <TextBlock Classes="caption" TextWrapping="Wrap" Margin="0,6,0,0"
+                               Text="Country matching depends on a geolocation lookup, so it is a looser guarantee than an exact address. If the country cannot be determined, IpLeash blocks." />
+                </StackPanel>
+
+                <!-- Saved target chips -->
+                <Grid Margin="0,10,0,0" ColumnDefinitions="Auto,*" IsVisible="{Binding HasSavedTargets}">
+                    <TextBlock Text="Saved" Classes="caption" VerticalAlignment="Top" Margin="0,5,10,0" />
+                    <ItemsControl Grid.Column="1" ItemsSource="{Binding SavedTargets}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Classes="inset" Margin="0,0,6,4" CornerRadius="{StaticResource PillRadius}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Image Width="19" Height="14" Margin="9,0,0,0" VerticalAlignment="Center"
+                                               RenderOptions.BitmapInterpolationMode="HighQuality"
+                                               Source="{Binding FlagCode, Converter={StaticResource CountryCodeToFlag}}" />
+                                        <Button Classes="chip" Classes.country="{Binding IsCountry}"
+                                                Command="{Binding $parent[Window].DataContext.UseSavedTargetCommand}"
+                                                CommandParameter="{Binding}">
+                                            <Button.Content>
+                                                <MultiBinding Converter="{StaticResource MaskIp}">
+                                                    <Binding Path="DisplayText" />
+                                                    <Binding Path="$parent[Window].DataContext.HideIps" />
+                                                </MultiBinding>
+                                            </Button.Content>
+                                            <ToolTip.Tip>
+                                                <MultiBinding Converter="{StaticResource MaskIp}">
+                                                    <Binding Path="ToolTipText" />
+                                                    <Binding Path="$parent[Window].DataContext.HideIps" />
+                                                </MultiBinding>
+                                            </ToolTip.Tip>
+                                        </Button>
+                                        <Button Classes="ghost icon" Content="✕" MinWidth="0"
+                                                Command="{Binding $parent[Window].DataContext.ForgetSavedTargetCommand}"
+                                                CommandParameter="{Binding}"
+                                                ToolTip.Tip="Forget this entry" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ============================ Monitored applications ============================ -->
+        <Border Grid.Row="3" Classes="card" MinHeight="200">
+            <DockPanel>
+                <Grid DockPanel.Dock="Top" Margin="0,0,0,12" ColumnDefinitions="*,Auto">
+                    <TextBlock Text="Monitored applications" Classes="section" VerticalAlignment="Center" Margin="0" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Classes="secondary small" Content="Detect Claude"
+                                Command="{Binding DetectKnownAppsCommand}"
+                                ToolTip.Tip="Finds Claude Code and Claude Desktop wherever they are installed on this Mac." />
+                        <Button Classes="secondary small" Content="From running process"
+                                Command="{Binding AddFromRunningProcessCommand}" />
+                        <Button Classes="secondary small" Content="Browse…" Margin="0"
+                                Command="{Binding AddByBrowseCommand}"
+                                ToolTip.Tip="Pick an .app bundle or a command-line executable." />
+                    </StackPanel>
+                </Grid>
+
+                <Border DockPanel.Dock="Top" Classes="inset" Padding="14,12" Margin="0,0,0,4"
+                        IsVisible="{Binding !HasApps}">
+                    <TextBlock Classes="caption" TextWrapping="Wrap"
+                               Text="No applications yet. “Detect Claude” finds Claude Code and Claude Desktop wherever they are installed on this Mac — useful because the install path differs from machine to machine. A whole .app counts as one entry, helpers included." />
+                </Border>
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,4,0,0">
+                    <ItemsControl ItemsSource="{Binding Apps}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Classes="inset" Padding="12,10" Margin="0,0,0,8">
+                                    <StackPanel>
+                                        <!-- App header -->
+                                        <Grid ColumnDefinitions="Auto,*,Auto,Auto">
+                                            <CheckBox Grid.Column="0" Margin="0,0,6,0" MinWidth="0"
+                                                      IsChecked="{Binding Enabled}"
+                                                      IsEnabled="{Binding !$parent[Window].DataContext.IsMonitoring}"
+                                                      ToolTip.Tip="Disabled apps stay in the list but are never blocked." />
+
+                                            <TextBox Grid.Column="1" Classes="field inline"
+                                                     Text="{Binding Name}"
+                                                     IsEnabled="{Binding !$parent[Window].DataContext.IsMonitoring}" />
+
+                                            <Border Grid.Column="2" Classes="pill" Margin="8,0" VerticalAlignment="Center"
+                                                    Classes.blocked="{Binding IsBlocked}"
+                                                    Classes.partial="{Binding IsPartiallyBlocked}">
+                                                <TextBlock Text="{Binding BlockStatusText}" />
+                                            </Border>
+
+                                            <Button Grid.Column="3" Classes="ghost icon" Content="Remove" MinWidth="0"
+                                                    Command="{Binding $parent[Window].DataContext.RemoveAppCommand}"
+                                                    CommandParameter="{Binding}" />
+                                        </Grid>
+
+                                        <TextBlock Text="{Binding ProcessSummary}" Classes="caption" Margin="34,1,0,0" />
+
+                                        <TextBlock Text="One or more targets are missing — nothing would be frozen for them."
+                                                   Classes="error" Margin="34,3,0,0"
+                                                   IsVisible="{Binding HasMissingExecutable}" />
+
+                                        <!-- Executables with live PIDs -->
+                                        <ItemsControl ItemsSource="{Binding Executables}" Margin="34,8,0,0">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Background="{StaticResource SurfaceBrush}"
+                                                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                                            CornerRadius="{StaticResource ControlRadius}"
+                                                            Padding="10,7" Margin="0,0,0,5">
+                                                        <Grid ColumnDefinitions="*,Auto,Auto">
+                                                            <StackPanel Grid.Column="0">
+                                                                <StackPanel Orientation="Horizontal">
+                                                                    <TextBlock Text="{Binding FileName}" Classes="mono" />
+                                                                    <Border Background="{StaticResource DangerSubtleBrush}"
+                                                                            CornerRadius="4" Padding="6,1" Margin="8,0,0,0"
+                                                                            IsVisible="{Binding !Exists}">
+                                                                        <TextBlock Text="missing" Foreground="{StaticResource DangerBrush}"
+                                                                                   FontSize="{StaticResource FontSizeTiny}" />
+                                                                    </Border>
+                                                                </StackPanel>
+                                                                <TextBlock Text="{Binding Directory}"
+                                                                           FontSize="{StaticResource FontSizeTiny}"
+                                                                           Foreground="{StaticResource TextMutedBrush}"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           ToolTip.Tip="{Binding Path}" />
+                                                            </StackPanel>
+
+                                                            <Border Grid.Column="1" Classes="pid" Classes.running="{Binding IsRunning}"
+                                                                    Margin="10,0" VerticalAlignment="Center" MaxWidth="260">
+                                                                <TextBlock Text="{Binding PidText}" TextTrimming="CharacterEllipsis"
+                                                                           ToolTip.Tip="{Binding PidText}" />
+                                                            </Border>
+
+                                                            <Button Grid.Column="2" Classes="ghost icon" Content="✕" MinWidth="0"
+                                                                    ToolTip.Tip="Remove this target"
+                                                                    Command="{Binding $parent[Window].DataContext.RemoveExecutableCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
+        <!-- ============================ Activity log ============================ -->
+        <Border Grid.Row="4" Classes="card" Margin="0" MinHeight="104">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Text="Activity" Classes="section" />
+
+                <!-- Horizontal scrolling disabled so long messages wrap instead of being clipped —
+                     which matters when the message is a failed-to-block diagnostic. -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl ItemsSource="{Binding Log}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,2" ColumnDefinitions="Auto,*">
+                                    <TextBlock Grid.Column="0" Text="{Binding TimestampText}"
+                                               FontFamily="{StaticResource MonoFont}"
+                                               FontSize="{StaticResource FontSizeTiny}"
+                                               Foreground="{StaticResource TextMutedBrush}"
+                                               Width="64" VerticalAlignment="Top" Margin="0,1,10,0" />
+                                    <SelectableTextBlock Grid.Column="1" TextWrapping="Wrap"
+                                                         FontSize="{StaticResource FontSizeSmall}"
+                                                         Foreground="{Binding Level, Converter={StaticResource LogLevelToBrush}}">
+                                        <SelectableTextBlock.Text>
+                                            <MultiBinding Converter="{StaticResource MaskIp}">
+                                                <Binding Path="Message" />
+                                                <Binding Path="$parent[Window].DataContext.HideIps" />
+                                            </MultiBinding>
+                                        </SelectableTextBlock.Text>
+                                    </SelectableTextBlock>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

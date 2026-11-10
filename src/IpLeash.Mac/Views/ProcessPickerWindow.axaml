@@ -1,0 +1,69 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="IpLeash.Views.ProcessPickerWindow"
+        Title="Add from running process"
+        Width="760" Height="600" MinWidth="560" MinHeight="380"
+        Background="{StaticResource PageBackgroundBrush}"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid Margin="18" RowDefinitions="Auto,Auto,*,Auto">
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,14">
+            <TextBlock Text="Add from running process" FontSize="{StaticResource FontSizeTitle}"
+                       FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" />
+            <TextBlock Classes="caption" TextWrapping="Wrap" Margin="0,3,0,0"
+                       Text="One row per app or executable, with every process it is currently running as — an app's helper processes are folded into its row. Tick one or more; they become a single entry, blocked as a unit." />
+        </StackPanel>
+
+        <TextBox Grid.Row="1" Classes="field" Margin="0,0,0,12"
+                 Text="{Binding FilterText}" Watermark="Filter by name or path" />
+
+        <Border Grid.Row="2" Classes="card" Padding="8" Margin="0">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding Candidates}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Classes="listRow">
+                                <Grid ColumnDefinitions="Auto,*,Auto">
+                                    <CheckBox Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" MinWidth="0"
+                                              IsChecked="{Binding IsSelected}"
+                                              IsEnabled="{Binding CanBlock}" />
+
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="{Binding ImageName}" FontWeight="SemiBold"
+                                                   FontSize="{StaticResource FontSizeBody}"
+                                                   Foreground="{StaticResource TextPrimaryBrush}" />
+                                        <TextBlock Text="{Binding Path}" FontSize="{StaticResource FontSizeTiny}"
+                                                   Foreground="{StaticResource TextMutedBrush}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   IsVisible="{Binding CanBlock}" />
+                                        <TextBlock Text="part of macOS, or another user's — cannot be blocked"
+                                                   Foreground="{StaticResource DangerBrush}"
+                                                   FontSize="{StaticResource FontSizeTiny}" Margin="0,2,0,0"
+                                                   IsVisible="{Binding !CanBlock}" />
+                                    </StackPanel>
+
+                                    <Border Grid.Column="2" Background="{StaticResource SurfaceHoverBrush}"
+                                            CornerRadius="4" Padding="8,2" VerticalAlignment="Center" Margin="10,0,0,0"
+                                            MaxWidth="220">
+                                        <TextBlock Text="{Binding PidText}" FontFamily="{StaticResource MonoFont}"
+                                                   FontSize="{StaticResource FontSizeTiny}"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </Border>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+            <Button Classes="secondary" Content="Cancel" IsCancel="True" Command="{Binding CancelCommand}" />
+            <Button Classes="primary" Content="Add selected" IsDefault="True" Margin="0"
+                    MinWidth="112" Command="{Binding AcceptCommand}" />
+        </StackPanel>
+    </Grid>
+</Window>
