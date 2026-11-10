@@ -265,10 +265,18 @@ public sealed partial class MainViewModel : ObservableValidator, IDisposable
 
         if (!ExecutableFile.IsUsable(picked))
         {
+#if IPLEASH_MACOS
+            _dialogService.ShowError(
+                "Not a usable application",
+                $"{picked}\n\nPick an .app bundle or a compiled (Mach-O) executable. A shell or node script " +
+                "runs inside its interpreter, so it cannot be targeted on its own, and apps that are part " +
+                "of macOS itself cannot be blocked.");
+#else
             _dialogService.ShowError(
                 "Not a usable executable",
                 $"{picked}\n\nA firewall rule binds to a process image. A .cmd, .bat or .ps1 launcher " +
                 "cannot be blocked — point at the .exe it starts.");
+#endif
             return;
         }
 

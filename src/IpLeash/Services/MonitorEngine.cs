@@ -168,7 +168,11 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
         var removed = await _firewall.RemoveOrphanedRulesAsync(ct).ConfigureAwait(false);
         foreach (var path in removed)
         {
+#if IPLEASH_MACOS
+            Log(LogLevel.Warning, $"Resumed processes left frozen by a previous run: {path}");
+#else
             Log(LogLevel.Warning, $"Removed block rules left over from a previous run: {path}");
+#endif
         }
 
         return removed;
@@ -281,11 +285,19 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
                         _blockedPaths.Remove(path);
                     }
 
+#if IPLEASH_MACOS
+                    Log(LogLevel.Info, $"Processes of {path} resumed.");
+#else
                     Log(LogLevel.Info, $"Block rules removed for {path}.");
+#endif
                 }
                 else
                 {
+#if IPLEASH_MACOS
+                    Log(LogLevel.Error, $"Failed to resume processes of {path}: {result.Detail}");
+#else
                     Log(LogLevel.Error, $"Failed to remove block rules for {path}: {result.Detail}");
+#endif
                 }
             }
 
@@ -700,16 +712,28 @@ public sealed class MonitorEngine : IMonitorEngine, IDisposable
                 }
             }
 
+#if IPLEASH_MACOS
+            Log(LogLevel.Warning, block
+                ? $"BLOCKED — every process of {path} is frozen, and any new one will be too."
+                : $"UNBLOCKED — processes of {path} resumed.");
+#else
             Log(LogLevel.Warning, block
                 ? $"BLOCKED — inbound and outbound firewall rules applied to {path}."
                 : $"UNBLOCKED — firewall rules removed from {path}.");
+#endif
         }
         else
         {
             // Surface loudly: a failed block means traffic is still flowing.
+#if IPLEASH_MACOS
+            Log(LogLevel.Error, block
+                ? $"FAILED TO BLOCK {path}. Traffic is NOT being stopped. {result.Detail}"
+                : $"Failed to resume processes of {path}. {result.Detail}");
+#else
             Log(LogLevel.Error, block
                 ? $"FAILED TO BLOCK {path}. Traffic is NOT being stopped. {result.Detail}"
                 : $"Failed to remove block rules for {path}. {result.Detail}");
+#endif
         }
     }
 

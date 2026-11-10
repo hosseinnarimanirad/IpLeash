@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- .NET 10 rather than the Windows build's .NET 8: the Mac app ships self-contained, so no
+         Visual Studio 2022 constraint applies, and .NET 8 support ends in November 2026. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Same language version as the Windows project, because half of this project's source is
+         that project's source, linked in below. -->
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>IpLeash</RootNamespace>
+    <!-- Kept identical to the Windows build so avares:// URIs and the settings folder match. -->
+    <AssemblyName>IpLeash</AssemblyName>
+    <Version>1.0.0</Version>
+    <!-- Lets the handful of user-visible strings in the shared engine and ViewModel describe what
+         actually happens on this platform (processes frozen, not firewall rules written). -->
+    <DefineConstants>$(DefineConstants);IPLEASH_MACOS</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
+    <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
+    <!-- The views lean on $parent[Window].DataContext lookups from inside item templates, which
+         reflection bindings handle without per-template type annotations. -->
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.20" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+  </ItemGroup>
+
+  <!-- ==========================================================================================
+       Shared with the Windows build.
+
+       Linked rather than copied, so the decision logic (fail-closed evaluation, country locking,
+       geolocation, settings) is one codebase. Everything excluded below is a platform service
+       with a macOS implementation under Platform/.
+       ========================================================================================== -->
+  <PropertyGroup>
+    <SharedRoot>..\IpLeash\</SharedRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(SharedRoot)Models\*.cs" Link="Shared\Models\%(Filename)%(Extension)" />
+    <Compile Include="$(SharedRoot)ViewModels\*.cs" Link="Shared\ViewModels\%(Filename)%(Extension)" />
+    <Compile Include="$(SharedRoot)Views\Services\IDialogService.cs;$(SharedRoot)Views\Services\ITrayIconService.cs"
+             Link="Shared\Views\Services\%(Filename)%(Extension)" />
+    <Compile Include="$(SharedRoot)Services\*.cs"
+             Exclude="$(SharedRoot)Services\FirewallService.cs;
+                      $(SharedRoot)Services\ProcessWatcher.cs;
+                      $(SharedRoot)Services\ProxyService.cs;
+                      $(SharedRoot)Services\AppDiscoveryService.cs;
+                      $(SharedRoot)Services\LocalIpService.cs;
+                      $(SharedRoot)Services\ExecutableFile.cs;
+                      $(SharedRoot)Services\AppPaths.cs"
+             Link="Shared\Services\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Bundled, never fetched: a flag must not depend on the network the app exists to police. -->
+    <AvaloniaResource Include="$(SharedRoot)Assets\Flags\*.png" Link="Assets\Flags\%(Filename)%(Extension)" />
+    <AvaloniaResource Include="Assets\*.png" />
+  </ItemGroup>
+
+</Project>

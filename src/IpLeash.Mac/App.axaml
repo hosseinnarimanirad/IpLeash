@@ -1,0 +1,19 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="IpLeash.App"
+             Name="IpLeash"
+             RequestedThemeVariant="Light">
+    <!-- Light only: the palette is the Windows build's, which was designed for a light page. -->
+
+    <Application.Styles>
+        <FluentTheme />
+        <StyleInclude Source="avares://IpLeash/Views/Styles/Theme.axaml" />
+    </Application.Styles>
+
+    <!-- Replaces Avalonia's default application menu, which would otherwise offer "About Avalonia". -->
+    <NativeMenu.Menu>
+        <NativeMenu>
+            <NativeMenuItem Header="About IpLeash" Click="OnAboutClicked" />
+        </NativeMenu>
+    </NativeMenu.Menu>
+</Application>
